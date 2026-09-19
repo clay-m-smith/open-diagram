@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "open-diagram",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone live diagram plugin for OpenCode V2.",
+  "type": "module",
+  "exports": {
+    ".": "./server.ts",
+    "./tui": "./tui.tsx",
+    "./harness": "./src/diagram/harness.ts",
+    "./rpc": "./src/diagram/schema.ts"
+  },
+  "files": [
+    "server.ts",
+    "tui.tsx",
+    "src",
+    "docs",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "verify": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.7",
+    "@resvg/resvg-js": "2.6.2",
+    "zod": "4.1.8"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.10 <0.6.0",
+    "@opentui/solid": ">=0.5.10 <0.6.0",
+    "solid-js": ">=1.9.0 <2.0.0"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.7",
+    "@types/node": "24.12.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22",
+    "opencode": ">=2.0.7 <2.1.0"
+  }
+}

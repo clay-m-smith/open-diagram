@@ -1,0 +1,30 @@
+import type { Evidence } from "./evidence.js"
+import { diagramRequest, parseDiagramOutput, DiagramOutputError } from "./harness.js"
+import type { DiagramGraph, DiagramGranularity, DiagramUpdate } from "./schema.js"
+
+/** Short, exact transport citations; durable IDs never depend on model spelling. */
+export function authorRequest(evidence: readonly Evidence[], previous: DiagramGraph | null, forced: boolean, granularity: DiagramGranularity = "overview", update?: DiagramUpdate) {
+  const aliases = new Map(evidence.map((item, index) => [`e${index + 1}`, item.id]))
+  const input = evidence.map((item, index) => ({ ...item, id: `e${index + 1}` }))
+  // Prior citations belong to another snapshot. Only identity/layout is a hint.
+  const hint = previous && { ...previous, nodes: previous.nodes.map((node) => ({ ...node, evidence: [] })) }
+  const request = diagramRequest(input, hint, forced, granularity)
+  if (update) {
+    request.instruction += `\nIncremental update: return exactly these existing views, with unchanged IDs and labels: ${JSON.stringify(update.views.map(({ id, label }) => ({ id, label })))}. Do not create or return other views. Update only what current evidence changes. Return each selected view's complete graph; keep stable node IDs and grounded details. Unselected views are cached separately and will not be regenerated.`
+    request.instruction += ` Your returned views may contain at most ${update.maxNodes ?? 48} nodes TOTAL; remaining nodes are reserved by untouched cached views. This overrides the general 48-node total. File mutation observations are ordered deltas: combine them with baseline reads; a later partial read does not erase changes outside its range.`
+    Object.assign(request.input, { update: { maxNodes: update.maxNodes ?? 48, views: update.views.map((view) => ({ ...view, graph: { ...view.graph,
+      nodes: view.graph.nodes.map((node) => ({ ...node, evidence: [] })) } })) } })
+  }
+  return {
+    request,
+    parse(text: string) {
+      const result = parseDiagramOutput(text, input)
+      if (update && result.views.reduce((sum, view) => sum + view.graph.nodes.length, 0) > (update.maxNodes ?? 48)) {
+        throw new DiagramOutputError("schema", `Incremental views exceed remaining ${update.maxNodes ?? 48}-node total budget`)
+      }
+      const graphs = result.views.map((view) => view.graph)
+      for (const graph of graphs) for (const node of graph.nodes) node.evidence = node.evidence.map((id) => aliases.get(id)!)
+      return { ...result, graph: result.views[0]?.graph ?? null }
+    },
+  }
+}
