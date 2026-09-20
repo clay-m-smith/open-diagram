@@ -1,7 +1,9 @@
 /** @jsxImportSource @opentui/solid */
-import { createEffect, createMemo, createSignal, For, onCleanup } from "solid-js"
-import type { BoxRenderable, ColorInput } from "@opentui/core"
-import { diagramTextWidth, diagramWires, layoutDiagram } from "./layout.js"
+import { createEffect, createMemo, createSignal, For, Show, onCleanup } from "solid-js"
+import { useRenderer } from "@opentui/solid"
+import { parseColor, type BoxRenderable, type ColorInput, type ScrollBoxRenderable } from "@opentui/core"
+import { diagramTextWidth, diagramWireRuns, layoutDiagram, type DiagramLayout, type DiagramLayoutOptions } from "./layout.js"
+import { diagramArrowColor } from "./arrow-colors.js"
 import type { DiagramGraph } from "./schema.js"
 
 /** Present source identities, not the operations used to collect them. */
@@ -24,6 +26,7 @@ export function CompactDiagram(props: {
   sources: readonly { id: string; label: string }[]
   selected?: string
   onSelect(id: string | undefined): void
+  onLayout?(nodes: DiagramGraph["nodes"]): void
   colors: { text: ColorInput; subdued: ColorInput; accent: ColorInput; border: ColorInput }
 }) {
   const [columns, setColumns] = createSignal(38)
@@ -42,23 +45,72 @@ export function CompactDiagram(props: {
   }
   const sources = createMemo(() => new Map(props.sources.map((source) => [source.id, source.label])))
   const [sourcesFor, setSourcesFor] = createSignal<string>()
-  const layout = createMemo(() => layoutDiagram(props.graph, { columns: columns(), selected: props.selected, changed: props.changed,
-    sourceControl: true, sources: sourcesFor() === props.selected && props.selected
-      ? props.graph.nodes.find((node) => node.id === props.selected)?.evidence.map((id) => sourceCaption(sources().get(id) ?? id)) : undefined }))
+  const [solved, setSolved] = createSignal<{ graph: DiagramGraph; layout: DiagramLayout }>()
+  const [working, setWorking] = createSignal(false)
+  const [problem, setProblem] = createSignal<string>()
+  const empty: DiagramLayout = { nodes: [], edges: [], width: 1, height: 1 }
+  const layout = createMemo(() => solved()?.graph === props.graph ? solved()!.layout : empty)
+  let pending: { graph: DiagramGraph; options: DiagramLayoutOptions } | undefined
+  let running = false
+  let scroll: ScrollBoxRenderable | undefined
+  let reveal: string | undefined
+  const renderer = useRenderer()
+  const revealHorizontal = () => {
+    if (reveal) { scroll?.scrollChildIntoView(`open-diagram-node-${reveal}`); reveal = undefined }
+  }
+  renderer.on("frame", revealHorizontal)
+  onCleanup(() => { pending = undefined; renderer.off("frame", revealHorizontal) })
+  const solve = async () => {
+    if (running) return
+    running = true
+    // At most one active solve plus the latest desired layout per mounted view.
+    // Rapid resize/selection cannot enqueue an unbounded series of ELK jobs.
+    while (pending && !disposed) {
+      const request = pending; pending = undefined
+      try {
+        const result = await layoutDiagram(request.graph, request.options)
+        if (disposed || pending) continue
+        setSolved({ graph: request.graph, layout: result })
+        reveal = props.selected ?? result.nodes[0]?.node.id
+        props.onLayout?.(result.nodes.map((box) => box.node))
+        renderer.requestRender()
+      } catch {
+        if (!disposed && !pending) setProblem("Diagram layout unavailable")
+      }
+    }
+    running = false
+    if (!disposed) setWorking(false)
+  }
+  createEffect(() => {
+    pending = { graph: props.graph, options: { columns: columns(), selected: props.selected, changed: props.changed,
+      sourceControl: true, sources: sourcesFor() === props.selected && props.selected
+        ? props.graph.nodes.find((node) => node.id === props.selected)?.evidence.map((id) => sourceCaption(sources().get(id) ?? id)) : undefined } }
+    setProblem(undefined); setWorking(true); void solve()
+  })
   const selectionContent = createMemo(() => JSON.stringify([props.graph, props.selected]))
   createEffect(() => { selectionContent(); setSourcesFor(undefined) })
+  const dark = createMemo(() => {
+    const color = parseColor(props.colors.text)
+    return 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b > 0.5
+  })
+  const wires = createMemo(() => diagramWireRuns(layout()))
   return <box width="100%" flexDirection="column" flexShrink={0}
     onSizeChange={resize}>
-    <scrollbox width="100%" height={layout().height + (layout().width > columns() ? 1 : 0)} scrollX={true} scrollY={false} flexShrink={0}
+    <Show when={working()}><box id="open-diagram-layout-pending" width={0} height={0} /></Show>
+    <Show when={problem()}><text fg={props.colors.subdued}>{problem()}</text></Show>
+    <Show when={!layout().nodes.length && working()}><text fg={props.colors.subdued}>Arranging diagram…</text></Show>
+    <scrollbox ref={(value) => { scroll = value }} width="100%" height={layout().height + (layout().width > columns() ? 1 : 0)} scrollX={true} scrollY={false} flexShrink={0}
       verticalScrollbarOptions={{ visible: false }} horizontalScrollbarOptions={{ visible: layout().width > columns() }}
       contentOptions={{ width: Math.max(columns(), layout().width), minWidth: Math.max(columns(), layout().width),
         maxWidth: Math.max(columns(), layout().width), height: layout().height, minHeight: layout().height, maxHeight: layout().height }}>
     <box width={Math.max(columns(), layout().width)} height={layout().height} flexShrink={0} flexDirection="column">
     <box position="absolute" top={0} left={Math.max(0, Math.floor((columns() - layout().width) / 2))} width={layout().width} height={layout().height} flexDirection="column">
-      <text position="absolute" left={0} top={0} width={layout().width} height={layout().height} selectable={false} fg={props.colors.subdued}>{diagramWires(layout())}</text>
+      <text position="absolute" left={0} top={0} width={layout().width} height={layout().height} selectable={false}>
+        <For each={wires()}>{(run) => <span style={{ fg: run.tone === undefined ? props.colors.subdued : diagramArrowColor(run.tone, dark()) }}>{run.text}</span>}</For>
+      </text>
       <For each={layout().edges}>{(edge) => <text position="absolute" left={edge.labelX} top={edge.labelY}
         width={Math.max(1, ...edge.labelLines.map(diagramTextWidth))} height={edge.labelLines.length}
-        fg={props.colors.subdued} onMouseUp={(event) => {
+        fg={diagramArrowColor(edge.tone, dark())} onMouseUp={(event) => {
           if (event.button !== 0) return
           event.stopPropagation(); props.onSelect(edge.to)
         }}>{edge.labelLines.join("\n")}</text>}</For>

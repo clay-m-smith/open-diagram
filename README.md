@@ -4,16 +4,34 @@ Live block diagrams for OpenCode V2 (>=2.0.7 <2.1.0). Infer useful structures fr
 development: model internals, systems, repositories, workflows, protocols, and
 more. Mixed projects get separate view tabs instead of one flattened diagram.
 
-The default surface is OpenCode's compact native sidebar. Select **Sidebar** to
+The default surface is OpenCode's compact native sidebar. Select **Classic sidebar** to
 restore its original contents. Blocks show labels and directed links; select a
 block for its description and functional explanation. **Sources** reveals compact
 file references separately, without tool-call logs. Cards fit their contents instead
-of stretching across the panel. Real connectors show flow without numbered block
-references: adjacent steps use a central spine, while branches, joins, and return
-paths use outside lanes. Disconnected cards get no implied arrow. `*` marks changes;
-`~` marks planned blocks; `↺` marks return paths; `╳` is a crossing, not a junction.
+of stretching across the panel. ELK.js lays out cards and orthogonal connectors
+with a top-to-bottom bias, minimizing crossings while allowing branches and
+return paths on either side. Wider panels can place parallel branches side by
+side; width is a preference, not a clipping constraint. Disconnected cards get
+no implied arrow. `*` marks changes;
+`~` marks planned blocks; `↺` marks return paths.
+Connections use matching line, label, and arrowhead hues, with brighter tones on
+dark terminals/exports and darker tones in light mode. Colors stay
+consistent while resizing or expanding cards. Eight hues are reused for dense
+graphs, preferring different colors for overlapping flow ranges. At terminal
+crossings, vertical lines pass over horizontal ones without extra overlap markers.
+Shared trunks and merged arrowheads stay neutral in terminals and exports rather than implying
+that they belong to only one connection.
 Dense graphs can scroll horizontally rather than hiding connections. The host
 retains vertical scrolling, sidebar visibility, and resizing.
+Top controls use aligned **View**, **Depth**, **Tools**, and **Export** groups.
+Active selectors are bold and underlined; controls wrap within their group on
+narrow panels. Long captions shorten with an ellipsis without splitting Unicode
+characters or brackets, and expand again when space permits. Sidebar and expanded
+panels share the same labels and styling.
+Keyboard navigation follows diagram layers from top to bottom, then left to
+right within each layer. Layout runs locally in an isolated worker, with a bounded
+cache and coalesced resize/selection updates; it never calls a model. Obsolete
+results cannot replace a newer graph. Terminal and exports use the same solver.
 Server snapshots preserve every view and tracking mode across reloads.
 Viewing is cache-only: there is no periodic polling or evidence collection on
 view/session-tab changes. The TUI keeps the last 64 visited sessions in memory,
@@ -72,8 +90,9 @@ without backend options defaults to **manual** generation, with no paid fallback
 - `/open-diagram fullscreen` — fullscreen graph, with the same view tabs.
 - `/open-diagram sidebar` or `close` — return to native sidebar contents.
 - `/open-diagram auto|on|off|refresh|pause|resume` — tracking controls.
+- `/open-diagram export-theme` — choose System, Dark, or Light for image exports.
 - In a focused panel: `j/k` select blocks, `f` fullscreen, `p` pause/resume,
-  `r` refresh, `Escape` return to Sidebar.
+  `r` refresh, `Escape` return to the classic OpenCode sidebar.
 
 Narrow terminals use the host's sidebar overlay; child sessions have no native
 sidebar, so `/open-diagram` opens the panel there. No private host layout state is
@@ -88,6 +107,12 @@ terminal screenshot. It includes node labels, directed links, and the selected
 block's displayed details; it excludes controls, tabs, status, and Sources UI.
 Stale but valid cached diagrams remain exportable. Export never calls a model.
 Terminal and image exports share the same content-sized card and connector layout.
+Exports default to **System**, following OpenCode's resolved light/dark mode at
+click time (including its system/terminal preference). Use **[Theme: System]**
+beside the export buttons to choose **Dark** or **Light** explicitly. This saved
+diagram-only preference applies to PNG, SVG, and Save across sessions and reloads;
+it never changes the host theme. Backgrounds, cards, text, and arrow hues all adapt.
+Saved images keep the chosen mode even when viewed in another application.
 
 - **SVG** copies a vector image using `image/svg+xml`, not plain-text markup.
   Paste into an SVG-capable application; PNG is more widely supported.

@@ -67,7 +67,7 @@ try:
                     stage = 8
                     break
                 continue
-            if stage == 0 and "Embedding classifier" in text and "[Model]" in text and "[Files]" in text and "[Sidebar]" in text and screen.find("Embedding *"):
+            if stage == 0 and "Embedding classifier" in text and "[Model]" in text and "[Files]" in text and "[Classic sidebar]" in text and screen.find("Embedding *"):
                 # Initial paint precedes measured-width reflow. Do not press an
                 # old card that gets replaced before its mouse-up is delivered.
                 position = screen.find("Embedding *")
@@ -81,6 +81,8 @@ try:
                 print("OK: actual OpenCode TUI loaded standalone bridge and rendered compact native sidebar tabs")
                 sidebar_left = screen.find("Depth ")[0]
                 assert "[1]" not in screen.text(sidebar_left) and "▼" in screen.text(sidebar_left)
+                assert screen.foreground("features") == screen.foreground("▼") != muted, "Native connection label and arrow must share their route color"
+                print("OK: actual native arrow and label share connection color")
                 click(screen.find("Embedding *"))
                 stage = 1
             elif stage == 1 and "Maps token indices" in screen.text() and "Encoder layer" in screen.text() and screen.find("[Sources]"):
@@ -103,14 +105,14 @@ try:
                 stage = 5
                 output.clear()
                 os.write(master, b"/open-diagram panel\r")
-            elif stage == 5 and "Drag divider to resize" in text and screen.find("[Full]"):
+            elif stage == 5 and "Drag divider to resize" in text and screen.find("[Fullscreen]"):
                 assert all(screen.find(label) for label in ["[PNG]", "[SVG]", "[Save]"])
                 print("OK: expanded native panel shows resize hint")
                 stage = 6
                 output.clear()
                 # Focused panel has single-letter shortcuts: typing a slash
                 # command here can invoke Pause. Use its actual fullscreen button.
-                click(screen.find("[Full]"))
+                click(screen.find("[Fullscreen]"))
             elif stage == 6 and "[Restore]" in text:
                 assert all(screen.find(label) for label in ["[PNG]", "[SVG]", "[Save]"])
                 print("OK: native fullscreen panel exercised")

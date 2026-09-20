@@ -6,6 +6,8 @@ import { renderDiagramPNG, renderDiagramSVG } from "../src/diagram/export.js"
 import { createDiagramExportActions, type ExportHost } from "../src/diagram/export-actions.js"
 import { saveDiagramFile, copyDiagramImage } from "../src/diagram/export-platform.js"
 import type { DiagramGraph } from "../src/diagram/schema.js"
+import { layoutDiagram } from "../src/diagram/layout.js"
+import { diagramArrowColor } from "../src/diagram/arrow-colors.js"
 
 const graph: DiagramGraph = { title: "Model <SVG> & image", summary: "Not displayed",
   nodes: [
@@ -13,31 +15,86 @@ const graph: DiagramGraph = { title: "Model <SVG> & image", summary: "Not displa
     { id: "b", label: "モデル × 128", kind: "model", status: "planned", detail: "Unselected details", evidence: ["PRIVATE_CITATION"] },
   ], edges: [{ from: "a", to: "b", label: "branch & join" }, { from: "b", to: "a", label: "feedback" }, { from: "b", to: "b", label: "self" }] }
 
-test("SVG exports full graph with safe labels and only displayed details, no chrome", () => {
+test("SVG exports full graph with safe labels and only displayed details, no chrome", async () => {
   const original = structuredClone(graph)
-  const svg = renderDiagramSVG(graph, { selected: "a" })
-  assert.equal(svg, renderDiagramSVG(graph, { selected: "a" }))
+  const svg = await renderDiagramSVG(graph, { selected: "a" })
+  assert.equal(svg, await renderDiagramSVG(graph, { selected: "a" }))
   assert.deepEqual(graph, original)
   for (const value of ["&lt;script&gt;", "&amp;", "Expanded details", "Functional explanation", "モデル × 128", "branch &amp; join", "feedback", "self"]) assert.ok(svg.includes(value), value)
   assert.doesNotMatch(svg, /<script>|PRIVATE_CITATION|Unselected details|Not displayed|\[Sources\]|\[Refresh\]|\[Pause\]|\[Expand\]|stale|foreignObject|href=/)
   assert.equal((svg.match(/rx="10"/g) ?? []).length, graph.nodes.length)
-  assert.equal((svg.match(/marker-end="url\(#arrow\)"/g) ?? []).length, graph.edges.length)
+  assert.equal((svg.match(/marker-end="url\(#arrow-\d+\)"/g) ?? []).length, graph.edges.length)
+  for (const edge of (await layoutDiagram(graph)).edges) {
+    const color = diagramArrowColor(edge.tone)
+    assert.ok(svg.includes(`stroke="${color}" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow-${edge.tone})"`), "exported route uses same hue identity as terminal")
+    assert.match(svg, new RegExp(`<marker id="arrow-${edge.tone}"[^>]*><path[^>]*fill="${color}"`))
+    const label = edge.label === "branch & join" ? "branch &amp; join" : edge.cycle ? `↺ ${edge.label}` : edge.label
+    assert.match(svg, new RegExp(`<text[^>]*fill="${color}"[^>]*>${label}</text>`), "label and arrow match")
+  }
   assert.doesNotMatch(svg, /\[1\]|\[2\]/)
   for (const match of svg.matchAll(/<rect[^>]*width="(\d+)"[^>]*rx="10"/g)) assert.ok(Number(match[1]) < 600, "content-sized cards, not full-width rectangles")
-  assert.doesNotMatch(renderDiagramSVG(graph), /Expanded details|Functional explanation/)
+  assert.doesNotMatch(await renderDiagramSVG(graph), /Expanded details|Functional explanation/)
+  const dark = await renderDiagramSVG(graph, { selected: "a", colorMode: "dark" })
+  assert.match(dark, /<rect width="100%" height="100%" fill="#111827"/)
+  assert.match(dark, /rx="10" fill="#1e293b" stroke="#94a3b8"/)
+  assert.match(dark, /fill="#e5e7eb"[^>]*>Expanded details<\/text>/)
+  assert.match(dark, /fill="#b6c2d2"[^>]*>input · observed<\/text>/)
+  for (const edge of (await layoutDiagram(graph)).edges) {
+    const color = diagramArrowColor(edge.tone, true)
+    assert.ok(dark.includes(`stroke="${color}" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow-${edge.tone})"`))
+    assert.match(dark, new RegExp(`<marker id="arrow-${edge.tone}"[^>]*><path[^>]*fill="${color}"`))
+  }
+  assert.equal(await renderDiagramSVG(graph, { colorMode: "light" }), await renderDiagramSVG(graph), "standalone default remains deterministic without host context")
 })
 
 test("PNG rasterizes full tall SVG with bounded nonempty dimensions", async () => {
   const tall = { ...graph, nodes: Array.from({ length: 24 }, (_, i) => ({ ...graph.nodes[0], id: `n${i}`, label: `Layer ${i}` })),
     edges: Array.from({ length: 23 }, (_, i) => ({ from: `n${i}`, to: `n${i + 1}`, label: `edge ${i}` })) }
-  const svg = renderDiagramSVG(tall)
+  const svg = await renderDiagramSVG(tall, { colorMode: "dark" })
   assert.match(svg, /Layer 23/)
-  const png = Buffer.from(await renderDiagramPNG(tall))
+  const png = Buffer.from(await renderDiagramPNG(tall, { colorMode: "dark" }))
   assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
   const width = png.readUInt32BE(16); const height = png.readUInt32BE(20)
   assert.equal(width, 960); assert.ok(height > 1500); assert.ok(width * height <= 16_000_000)
   assert.ok(png.byteLength > 5000)
   assert.match(svg, new RegExp(`height="${height}"`))
+})
+
+test("ELK exports separate ports and preserves orthogonal border joins", async () => {
+  const fork = { ...graph, nodes: ["a", "b", "c", "d"].map((id) => ({ ...graph.nodes[0], id, label: id })),
+    edges: [{ from: "a", to: "b", label: "next" }, { from: "a", to: "d", label: "skip" }, { from: "b", to: "d", label: "join" }] }
+  const svg = await renderDiagramSVG(fork)
+  const routes = [...svg.matchAll(/<path d="([^"]+)" fill="none" stroke="([^"]+)"[^>]*marker-end="url\(#arrow-([^)]*)\)"/g)]
+  assert.equal(routes.length, 3)
+  assert.ok(routes.every((route) => route[3] !== "shared"), "solver avoids merged arrowheads in this formerly overlapping fan-in")
+  const points = routes.map((route) => [...route[1].matchAll(/[ML]([\d.]+),([\d.]+)/g)].map((point) => [Number(point[1]), Number(point[2])]))
+  assert.notDeepEqual(points[1].at(-1), points[2].at(-1), "distinct fan-in targets")
+  assert.notDeepEqual(points[0][0], points[1][0], "distinct fork origins")
+  const layout = await layoutDiagram(fork, { columns: 88 })
+  const left = (960 - layout.width * 10) / 2
+  const top = 28 + 2 * 24
+  layout.edges.forEach((edge, i) => {
+    const box = layout.nodes.find((node) => node.node.id === edge.to)!
+    const tip = points[i].at(-1)!
+    if (edge.targetSide === "top" || edge.targetSide === "bottom") assert.equal(tip[1], top + (box.y + (edge.targetSide === "bottom" ? box.height : 0)) * 24)
+    else assert.equal(tip[0], left + (box.x + (edge.targetSide === "right" ? box.width : 0)) * 10)
+  })
+  assert.equal(new Set(routes.map((route) => route[2])).size, 3, "unshared route lengths retain distinct hues")
+  const cyclic = { ...fork, nodes: ["Input", "Features", "Model", "Result"].map((label, i) => ({ ...fork.nodes[i], label,
+    status: i < 2 ? "observed" as const : "planned" as const })), edges: [
+    { from: "a", to: "b", label: "left" }, { from: "a", to: "c", label: "right" },
+    { from: "b", to: "d", label: "features" }, { from: "c", to: "d", label: "predictions" },
+    { from: "d", to: "b", label: "feedback" }, { from: "d", to: "d", label: "retry" },
+  ] }
+  for (const route of (await renderDiagramSVG(cyclic)).matchAll(/<path d="([^"]+)"[^>]*marker-end=/g)) {
+    const points = [...route[1].matchAll(/[ML]([\d.]+),([\d.]+)/g)].map((p) => [Number(p[1]), Number(p[2])])
+    for (let i = 1; i < points.length; i++) assert.ok(points[i][0] === points[i - 1][0] || points[i][1] === points[i - 1][1], "border extension must not turn snapped bend into a diagonal")
+  }
+  const crowded = await renderDiagramSVG({ ...cyclic, edges: [...cyclic.edges,
+    ...Array.from({ length: 30 }, (_, i) => ({ from: "d", to: "b", label: `return ${i}` }))] }, { colorMode: "dark" })
+  assert.match(crowded, /marker-end="url\(#arrow-shared\)"/, "unavoidable cell-merged tips remain neutral")
+  assert.match(crowded, /<marker id="arrow-shared"[^>]*><path[^>]*fill="#94a3b8"/)
+  assert.ok(crowded.lastIndexOf('fill="none" stroke="#94a3b8"') > crowded.lastIndexOf('marker-end='), "neutral shared lengths overlay every colored route")
 })
 
 test("exclusive save never replaces files/symlinks and removes temporary staging", async () => {
@@ -77,7 +134,7 @@ if(process.argv.includes('TARGETS')) {
     assert.deepEqual(await copyDiagramImage(png, "image/png", new AbortController().signal, true), { copied: true })
     assert.deepEqual(await readFile(target), Buffer.from(png))
     assert.deepEqual(JSON.parse(await readFile(target + ".args", "utf8")), ["-selection", "clipboard", "-t", "image/png", "-i"])
-    const svg = renderDiagramSVG(graph)
+    const svg = await renderDiagramSVG(graph)
     assert.deepEqual(await copyDiagramImage(Buffer.from(svg), "image/svg+xml", new AbortController().signal, true), { copied: true })
     assert.equal(await readFile(target, "utf8"), svg)
     assert.deepEqual(JSON.parse(await readFile(target + ".args", "utf8")), ["-selection", "clipboard", "-t", "image/svg+xml", "-i"])
@@ -106,7 +163,8 @@ test("copy/save actions capture graph at click, coalesce, cancel, and fall back 
   const notices: string[] = []; const copies: string[] = []; const prompts: boolean[] = []
   let format: "png" | "svg" = "svg"; let path: string | undefined = join(directory, "saved.svg")
   let choose!: (value: "svg") => void; let delayed = false; let copied = true
-  const host: ExportHost = { directory, chooseFormat: () => delayed ? new Promise((resolve) => { choose = resolve }) : Promise.resolve(format),
+  let colorMode: "light" | "dark" = "dark"
+  const host: ExportHost = { directory, colorMode: () => colorMode, chooseFormat: () => delayed ? new Promise((resolve) => { choose = resolve }) : Promise.resolve(format),
     choosePath: async (_value, _format, fallback) => { prompts.push(fallback); return path },
     copySVG: async (svg) => { copies.push(svg); return copied ? { copied: true } : { copied: false, reason: "Fixture clipboard failure" } },
     copyPNG: async () => ({ copied: false, reason: "Fixture image clipboard unavailable" }),
@@ -117,13 +175,18 @@ test("copy/save actions capture graph at click, coalesce, cancel, and fall back 
     await run("svg", graph, "a")
     assert.equal(copies.length, 1); assert.equal(prompts.length, 0)
     assert.match(notices.at(-1)!, /SVG copied to image clipboard/)
+    assert.match(copies[0], /<rect width="100%" height="100%" fill="#111827"/)
     delayed = true
     const input = structuredClone(graph)
     const saving = run("save", input); input.title = "Changed after click"
+    colorMode = "light"
     await run("svg", graph); assert.equal(copies.length, 1)
     choose("svg"); await saving
     assert.match(await readFile(path!, "utf8"), /Model &lt;SVG&gt;/)
     assert.doesNotMatch(await readFile(path!, "utf8"), /Changed after click/)
+    assert.match(await readFile(path!, "utf8"), /<rect width="100%" height="100%" fill="#111827"/, "Save retains click-time mode while format dialog is open")
+    await run("svg", graph)
+    assert.match(copies.at(-1)!, /<rect width="100%" height="100%" fill="#ffffff"/, "next click resolves current mode")
     delayed = false
     await run("save", graph); assert.match(notices.at(-1)!, /already exists/)
     path = join(directory, "fallback.png"); format = "png"

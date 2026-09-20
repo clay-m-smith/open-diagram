@@ -10,6 +10,7 @@ import sys
 import termios
 import time
 import xml.etree.ElementTree as ET
+import zlib
 from terminal_screen import TerminalScreen
 
 project, session = sys.argv[1:3]
@@ -57,12 +58,35 @@ def export_idle():
     position = screen.find("[Save]")
     return position and "…" not in "".join(screen.rows[position[1]][position[0]:])
 
-def check_svg(data):
+def stop_child():
+    child.terminate()
+    try:
+        child.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait(timeout=3)
+
+def check_svg(data, mode="dark"):
     root = ET.fromstring(data)
     assert root.tag == "{http://www.w3.org/2000/svg}svg"
     text = " ".join(root.itertext())
     assert "Embedding" in text and "GELU" in text
-    assert all(chrome not in text for chrome in ["[PNG]", "[SVG]", "[Save]", "[Refresh]", "[Pause]", "[Sources]", "stale"])
+    assert all(chrome not in text for chrome in ["[PNG]", "[SVG]", "[Save]", "[Theme:", "[Refresh]", "[Pause]", "[Sources]", "stale"])
+    background = root.find("{http://www.w3.org/2000/svg}rect")
+    assert background.attrib["fill"] == ("#111827" if mode == "dark" else "#ffffff"), "Export must honor resolved color mode"
+
+def check_png(png):
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", png[16:24])[0] == 960
+    assert png[24] == 8 and png[25] in (2, 6), "8-bit RGB/RGBA output"
+    offset, compressed = 8, bytearray()
+    while offset < len(png):
+        length = struct.unpack(">I", png[offset:offset + 4])[0]
+        if png[offset + 4:offset + 8] == b"IDAT":
+            compressed.extend(png[offset + 8:offset + 8 + length])
+        offset += length + 12
+    # Every PNG filter predicts zero for the first pixel of the first row.
+    assert zlib.decompress(compressed)[1:4] == bytes.fromhex("111827"), "Native PNG uses system dark background"
 
 try:
     deadline = time.monotonic() + 20
@@ -100,8 +124,7 @@ try:
         elif stage == 3 and os.path.exists(png_path) and export_idle() and "Saved PNG:" in screen.text() and "Save PNG diagram" not in screen.text():
             with open(png_path, "rb") as image:
                 png = image.read()
-            assert png[:8] == b"\x89PNG\r\n\x1a\n"
-            assert struct.unpack(">II", png[16:24])[0] == 960
+            check_png(png)
             print("OK: actual native PNG action falls back to saving valid full diagram image")
             click("[Save]")
             stage = 4
@@ -121,10 +144,10 @@ try:
             os.unlink(clipboard_path)
             click("[SVG]")
             stage = 8
-        elif stage == 8 and os.path.exists(clipboard_path) and export_idle() and screen.find("[Full]"):
+        elif stage == 8 and os.path.exists(clipboard_path) and export_idle() and screen.find("[Fullscreen]"):
             with open(clipboard_path, "rb") as image:
                 check_svg(image.read())
-            click("[Full]")
+            click("[Fullscreen]")
             stage = 9
         elif stage == 9 and screen.find("[Restore]") and export_idle():
             os.unlink(clipboard_path)
@@ -140,19 +163,53 @@ try:
             stage = 11
         elif stage == 11 and os.path.exists(clipboard_png) and export_idle() and "PNG copied to image clipboard" in screen.text():
             with open(clipboard_png, "rb") as image:
-                assert image.read(8) == b"\x89PNG\r\n\x1a\n"
+                check_png(image.read())
             print("OK: actual native PNG action sends image/png to clipboard adapter")
+            click("[Theme: System]")
             stage = 12
+        elif stage == 12 and "Diagram export theme" in screen.text():
+            os.write(master, b"\x1b[B\x1b[B\r")
+            stage = 13
+        elif stage == 13 and screen.find("[Theme: Light]") and export_idle():
+            # Preference write completed before export_idle. Either graceful or
+            # forced exit of this owned TUI must preserve the next startup mode.
+            stop_child()
+            os.close(master)
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 55, 170, 0, 0))
+            child = subprocess.Popen(["opencode", project, "--session", session], stdin=slave, stdout=slave, stderr=slave,
+                                     cwd=project, env=env, start_new_session=True)
+            os.close(slave)
+            screen = TerminalScreen(170, 55)
+            output.clear()
+            stage = 14
+        elif stage == 14 and screen.find("[Theme: Light]") and export_idle() and "GELU" in screen.text():
+            os.unlink(clipboard_path)
+            click("[SVG]")
+            stage = 15
+        elif stage == 15 and os.path.exists(clipboard_path) and export_idle():
+            with open(clipboard_path, "rb") as image:
+                check_svg(image.read(), "light")
+            print("OK: export-only Light override persists across native TUI restart and reaches SVG")
+            click("[Theme: Light]")
+            stage = 16
+        elif stage == 16 and "Diagram export theme" in screen.text():
+            os.write(master, b"\x1b[A\x1b[A\r")
+            stage = 17
+        elif stage == 17 and screen.find("[Theme: System]") and export_idle():
+            os.unlink(clipboard_path)
+            click("[SVG]")
+            stage = 18
+        elif stage == 18 and os.path.exists(clipboard_path) and export_idle():
+            with open(clipboard_path, "rb") as image:
+                check_svg(image.read())
+            print("OK: System restores current host dark mode; SVG, PNG and Save honor it")
+            stage = 19
             break
         if child.poll() is not None:
             break
-    if stage != 12:
+    if stage != 19:
         raise AssertionError(f"Native export deadline at stage {stage}\n{screen.text()}\n{output[-1500:]!r}")
 finally:
-    child.terminate()
-    try:
-        child.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        child.kill()
-        child.wait(timeout=3)
+    stop_child()
     os.close(master)

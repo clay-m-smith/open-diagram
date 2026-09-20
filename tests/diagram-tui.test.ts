@@ -9,11 +9,12 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 import type { Data, KeymapCommand, KeymapLayer, PanelInput, SlotClaim } from "@opencode/plugin/tui/context"
 import { testRender } from "@opentui/solid"
-import { RGBA } from "@opentui/core"
+import { RGBA, TextAttributes } from "@opentui/core"
 import { batch, createComponent, createSignal, Show } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 
-import { diagramTextWidth, diagramWires, layoutDiagram, wrapDiagramText } from "../src/diagram/layout.js"
+import { diagramTextWidth, diagramWireRuns, diagramWires, layoutDiagram, wrapDiagramText } from "../src/diagram/layout.js"
+import { ARROW_COLORS, diagramArrowColor } from "../src/diagram/arrow-colors.js"
 import { type DiagramGraph, type DiagramState, initialState } from "../src/diagram/schema.js"
 import {
   createDiagramMonitor, DIAGRAM_CACHE_LIMIT, DIAGRAM_TIMEOUT_MS, diagramStatus, diagramColors,
@@ -91,9 +92,9 @@ if (!process.execArgv.includes("--conditions=browser")) {
       feedback: { warning: { base: rgba.accent } } }, border: { base: rgba.border } }), rgba)
   })
 
-  test("content-sized flow preserves edges, routes around cards, and never invents adjacency", () => {
+  test("content-sized flow preserves edges, routes around cards, and never invents adjacency", async () => {
     const isolated = { ...graph.nodes[0], id: "isolated", label: "Unconnected" }
-    const layout = layoutDiagram({ ...graph, nodes: [...graph.nodes, isolated] }, { columns: 80 })
+    const layout = await layoutDiagram({ ...graph, nodes: [...graph.nodes, isolated] }, { columns: 80 })
     assert.equal(layout.nodes.length, 5)
     const edges = layout.edges
     assert.deepEqual(edges.map(({ from, to, label }) => ({ from, to, label })), graph.edges)
@@ -106,12 +107,13 @@ if (!process.execArgv.includes("--conditions=browser")) {
     assert.equal(edges.find((edge) => edge.label === "retry")!.cycle, true)
     assert.doesNotMatch(diagramWires(layout), /\[\d+\]/)
     assert.match(diagramWires(layout), /▼/)
-    assert.match(diagramWires(layout), /◀/)
+    assert.match(diagramWires(layout), /[◀▶▲]/)
     for (const edge of edges) {
       const target = layout.nodes.find((box) => box.node.id === edge.to)!
-      assert.deepEqual(edge.points.at(-1), edge.direct
-        ? { x: Math.floor(layout.nodes[0].x + layout.nodes[0].width / 2), y: target.y - 1 }
-        : { x: target.x + target.width, y: target.y + Math.floor(target.height / 2) })
+      const tip = edge.points.at(-1)!
+      assert.equal(edge.targetSide === "left" ? tip.x : edge.targetSide === "right" ? tip.x : tip.y,
+        edge.targetSide === "left" ? target.x - 1 : edge.targetSide === "right" ? target.x + target.width : edge.targetSide === "top" ? target.y - 1 : target.y + target.height)
+      assert.equal(diagramWires(layout).split("\n")[tip.y][tip.x], { top: "▼", bottom: "▲", left: "▶", right: "◀" }[edge.targetSide])
       for (let i = 1; i < edge.points.length; i++) {
         const a = edge.points[i - 1]; const b = edge.points[i]
         assert.ok(a.x === b.x || a.y === b.y, "orthogonal path")
@@ -121,27 +123,88 @@ if (!process.execArgv.includes("--conditions=browser")) {
         }
       }
     }
-    const reversed = layoutDiagram({ ...graph, nodes: [...graph.nodes].reverse(), edges: graph.edges.filter((edge) => edge.from !== "d") })
+    const reversed = await layoutDiagram({ ...graph, nodes: [...graph.nodes].reverse(), edges: graph.edges.filter((edge) => edge.from !== "d") })
     assert.equal(reversed.nodes[0].node.id, "a", "flow order does not depend on input array order")
     assert.equal(diagramTextWidth("👩‍💻e\u0301日本"), 7)
     assert.deepEqual(wrapDiagramText("👩‍💻👩‍💻", 2), ["👩‍💻", "👩‍💻"])
     assert.equal(diagramTextWidth("𠮷".repeat(10)), 20)
     assert.deepEqual(wrapDiagramText("𠮷".repeat(10), 10), ["𠮷".repeat(5), "𠮷".repeat(5)])
-    const fork = layoutDiagram({ ...graph, edges: [
+    const fork = await layoutDiagram({ ...graph, edges: [
       { from: "a", to: "b", label: "next" }, { from: "a", to: "c", label: "red" }, { from: "a", to: "d", label: "blue" },
     ] })
-    const red = fork.edges[1]; const blue = fork.edges[2]
-    assert.equal(diagramWires(fork).split("\n")[blue.points[1].y][red.points[2].x], "╳", "diverged same-source edges cross without a false join")
+    const crossed = { ...fork, width: 6, height: 6, edges: [
+      { ...fork.edges[1], points: [{ x: 2, y: 0 }, { x: 2, y: 4 }] },
+      { ...fork.edges[2], points: [{ x: 0, y: 2 }, { x: 4, y: 2 }] },
+    ] }
+    const crossing = diagramWireRuns(crossed).flatMap((run) => [...run.text].map((text) => ({ text, tone: run.tone })))[2 * 7 + 2]
+    assert.deepEqual(crossing, { text: "│", tone: fork.edges[1].tone }, "unavoidable crossings still have no false join or overlap marker")
+    assert.doesNotMatch(diagramWires(fork), /╳/)
     const maximum = {
       ...graph,
       nodes: Array.from({ length: 24 }, (_, index) => ({ ...isolated, id: `n${index}` })),
       edges: Array.from({ length: 48 }, (_, index) => ({ from: `n${index % 24}`, to: `n${(index + 1) % 24}`, label: `${index}:${"x".repeat(56)}` })),
     }
-    const full = layoutDiagram(maximum)
+    const full = await layoutDiagram(maximum)
     assert.equal(full.nodes.length, 24)
     assert.equal(full.edges.length, 48)
     assert.ok(full.edges.every((edge) => edge.labelLines.join("").replace(/^↺\s*/, "").includes(edge.label)))
     assert.equal(diagramWires(full).split("\n").length, full.height)
+  })
+
+  test("arrow hues distinguish routes and remain stable through expansion, resize and edge reorder", async () => {
+    const original = structuredClone(graph)
+    const base = await layoutDiagram(graph)
+    const identities = (layout: Awaited<ReturnType<typeof layoutDiagram>>) => Object.fromEntries(layout.edges.map((edge) =>
+      [JSON.stringify([edge.from, edge.to, edge.label]), edge.tone]))
+    assert.equal(new Set(base.edges.map((edge) => edge.tone)).size, graph.edges.length)
+    assert.deepEqual(identities(await layoutDiagram(graph, { columns: 100, selected: "b", sourceControl: true })), identities(base))
+    assert.deepEqual(identities(await layoutDiagram({ ...graph, edges: [...graph.edges].reverse() })), identities(base))
+    const pixels = diagramWireRuns(base).flatMap((run) => [...run.text].map((text) => ({ text, tone: run.tone })))
+    const direct = base.edges.find((edge) => edge.direct)!
+    const tip = direct.points.at(-1)!
+    assert.deepEqual(pixels[tip.y * (base.width + 1) + tip.x], { text: "▼", tone: direct.tone })
+    for (let tone = 0; tone < ARROW_COLORS.length; tone++) assert.notEqual(diagramArrowColor(tone), diagramArrowColor(tone, true))
+    assert.deepEqual(graph, original, "color assignment never mutates accepted graph")
+  })
+
+  test("ELK keeps downward flow, uses available width, and removes former right-lane crossings", async () => {
+    const fork = { ...graph, edges: [{ from: "a", to: "b", label: "next" }, { from: "a", to: "c", label: "branch" }, { from: "a", to: "d", label: "skip" }] }
+    const compact = await layoutDiagram(fork, { columns: 38 })
+    const wide = await layoutDiagram(fork, { columns: 140 })
+    assert.ok(compact.height > wide.height, "wider viewport can show parallel branches instead of forced single column")
+    const root = wide.nodes.find((box) => box.node.id === "a")!
+    assert.ok(wide.nodes.filter((box) => box.node.id !== "a").every((box) => box.y > root.y + root.height), "flow remains vertical, not left-to-right")
+    const loop = await layoutDiagram(graph, { columns: 140 })
+    assert.ok(loop.width < 53, "tighter horizontal gaps improve the previous 53-column branched layout")
+    assert.ok(loop.edges.some((edge) => edge.targetSide === "left" || edge.sourceSide === "left"), "left ports are available for return routes")
+    assert.ok(wide.edges.some((edge) => edge.points.some((point) => point.x > root.x + root.width)), "right routing is also available")
+    let crossings = 0
+    for (let i = 0; i < wide.edges.length; i++) for (const other of wide.edges.slice(i + 1)) {
+      const edge = wide.edges[i]
+      for (let a = 1; a < edge.points.length; a++) for (let b = 1; b < other.points.length; b++) {
+        const p = edge.points[a - 1]; const q = edge.points[a]; const r = other.points[b - 1]; const s = other.points[b]
+        const vertical = p.x === q.x; if (vertical === (r.x === s.x)) continue
+        const [v, w, h, k] = vertical ? [p, q, r, s] : [r, s, p, q]
+        if (v.x > Math.min(h.x, k.x) && v.x < Math.max(h.x, k.x) && h.y > Math.min(v.y, w.y) && h.y < Math.max(v.y, w.y)) crossings++
+      }
+    }
+    assert.equal(crossings, 0, "old right-only fork had a crossing; ELK separates these routes")
+    for (const layout of [compact, wide, loop]) for (const edge of layout.edges) for (let line = 0; line < edge.labelLines.length; line++) {
+      const y = edge.labelY + line
+      const row = diagramWires(layout).split("\n")[y]
+      assert.equal(row.slice(edge.labelX, edge.labelX + diagramTextWidth(edge.labelLines[line])).trim(), "", "ELK label clearance survives cell snapping")
+      for (let x = edge.labelX; x < edge.labelX + diagramTextWidth(edge.labelLines[line]); x++) {
+        assert.ok(layout.nodes.every((box) => x < box.x || x >= box.x + box.width || y < box.y || y >= box.y + box.height), "compact labels cannot overlap cards")
+        assert.ok(layout.edges.every((other) => other === edge || x < other.labelX || x >= other.labelX + Math.max(0, ...other.labelLines.map(diagramTextWidth))
+          || y < other.labelY || y >= other.labelY + other.labelLines.length), "compact labels cannot overlap each other")
+      }
+    }
+    const again = await layoutDiagram(structuredClone(fork), { columns: 140 })
+    assert.deepEqual(again, wide, "same inputs give stable geometry")
+    const pending = layoutDiagram(structuredClone(fork), { columns: 81 })
+    const latest = layoutDiagram(fork, { columns: 140, selected: "b" })
+    await Promise.all([pending, latest])
+    assert.deepEqual((await latest).nodes.map((box) => box.node.id), wide.nodes.map((box) => box.node.id), "expansion preserves layer reading order")
   })
 
   test("monitor scopes events and initial snapshots; switches abort and reject obsolete responses", async (t) => {
@@ -668,7 +731,8 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const [selected, setSelected] = createSignal<string | undefined>(alpha.id)
     const [panel, setPanel] = createSignal<{ name: string; sessionID: string }>()
     const [fullscreen, setFullscreen] = createSignal(false)
-    const [preferences, updatePreferences] = createStore({ sidebarVisible: true })
+    const [preferences, updatePreferences] = createStore<{ sidebarVisible: boolean; exportTheme?: "system" | "dark" | "light" }>({ sidebarVisible: true })
+    const [themeText, setThemeText] = createSignal<string | RGBA>("#eeeeee")
     const slots: SlotClaim[] = []
     const [replacement, setReplacement] = createSignal<SlotClaim>()
     const commands = new Map<string, KeymapCommand>()
@@ -681,6 +745,7 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const controls: Array<Parameters<DiagramClient["control"]>[0]> = []
     let focusCount = 0
     let writeFailure = false
+    let themeChoice: "system" | "dark" | "light" | undefined = "dark"
     let readCount = 0
     let held: (ReturnType<typeof deferred<DiagramState>> & { signal?: AbortSignal }) | undefined
     let heldControl: (ReturnType<typeof deferred<DiagramState>> & { afterApply: boolean }) | undefined
@@ -714,7 +779,7 @@ if (!process.execArgv.includes("--conditions=browser")) {
       client: { rpc: (definition: { id: string }) => { assert.equal(definition.id, "open-diagram"); return rpc } },
       storage: { store: (key: string, options: { initial: object }) => {
         assert.equal(key, "diagram-preferences")
-        assert.deepEqual(options.initial, { sidebarVisible: true })
+        assert.deepEqual(options.initial, { sidebarVisible: true, exportTheme: "system" })
         return [preferences, async (mutate: (draft: typeof preferences) => void) => {
           if (writeFailure) throw new Error("storage unavailable")
           updatePreferences(produce(mutate))
@@ -728,8 +793,14 @@ if (!process.execArgv.includes("--conditions=browser")) {
           if (key) commands.set(key, command)
         }
       } },
-      theme: { text: { default: "#eeeeee", subdued: "#aaaaaa", feedback: { warning: { default: "#ffff00" } } }, border: { default: "#888888" } },
+      theme: { text: { get default() { return themeText() }, subdued: "#aaaaaa", feedback: { warning: { default: "#ffff00" } } }, border: { default: "#888888" } },
+      themeMode: "dark",
       ui: {
+        dialog: { select: async (input: { title: string; current: string }) => {
+          assert.equal(input.title, "Diagram export theme")
+          assert.equal(input.current, preferences.exportTheme ?? "system")
+          return themeChoice
+        } },
         slot: (slot: SlotClaim) => {
           slots.push(slot)
           if (slot.replace === "sidebar.content") setReplacement(slot)
@@ -769,13 +840,53 @@ if (!process.execArgv.includes("--conditions=browser")) {
       renderPanel: () => panelSlot.render(input as never),
     }), { width: 80, height: 50 })
     t.after(() => rendered.renderer.destroy())
-    const flush = async () => { await settle(); await rendered.flush() }
+    const flush = async () => {
+      await settle(); await rendered.flush()
+      // Renderer flush drains microtasks only; the real ELK worker needs event
+      // loop turns, not more synchronous frame passes.
+      const deadline = Date.now() + 5_000
+      while (rendered.renderer.root.findDescendantById("open-diagram-layout-pending")) {
+        assert.ok(Date.now() < deadline, "ELK layout completed")
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        await rendered.flush()
+      }
+      await rendered.flush()
+    }
     const run = async (id: string, argument?: string) => { await commands.get(id)!.run(argument); await flush() }
     await flush()
     assert.equal(opened.length, 0, "default uses sidebar rather than opening a wide panel")
     assert.ok(slots.some((slot) => slot.before === "sidebar.content"), "tab anchor survives content replacement")
     assert.ok(slots.some((slot) => slot.replace === "sidebar.content"), "diagram uses reversible native slot")
     assert.match(rendered.captureCharFrame(), /Branched pipeline/)
+    const toolbarSpan = (label: string) => rendered.captureSpans().lines.flatMap((line) => line.spans).find((span) => span.text.includes(`[${label}]`))!
+    const selectedStyle = TextAttributes.BOLD | TextAttributes.UNDERLINE
+    assert.equal(toolbarSpan("Model").attributes & selectedStyle, selectedStyle, "active view has a non-color-only indicator")
+    assert.equal(toolbarSpan("Overview").attributes & selectedStyle, selectedStyle, "depth uses the same active style")
+    assert.equal(toolbarSpan("Files").attributes & selectedStyle, 0)
+    const header = rendered.captureCharFrame().split("\n")
+    for (const [group, button] of [["View", "Model"], ["Depth", "Overview"], ["Tools", "Pause"], ["Export", "PNG"]]) {
+      const row = header.find((line) => line.startsWith(group))!
+      assert.ok(row, `${group} has a consistent group label`)
+      assert.equal(row.indexOf(`[${button}]`), 7, "group controls align on the same column")
+    }
+    assert.match(rendered.captureCharFrame(), /\[Refresh\]/, "sidebar uses the same explicit action label as the panel")
+    assert.match(rendered.captureCharFrame(), /\[Theme: System\]/, "old preferences without export theme follow host")
+    const themeRow = rendered.captureCharFrame().split("\n").findIndex((line) => line.includes("[Theme: System]"))
+    await rendered.mockMouse.click(rendered.captureCharFrame().split("\n")[themeRow].indexOf("[Theme: System]") + 2, themeRow)
+    await flush()
+    assert.equal(preferences.exportTheme, "dark")
+    assert.match(rendered.captureCharFrame(), /\[Theme: Dark\]/)
+    themeChoice = undefined
+    await run("open-diagram", "export-theme")
+    assert.equal(preferences.exportTheme, "dark", "cancel keeps preference")
+    themeChoice = "light"; writeFailure = true
+    await run("open-diagram", "export-theme")
+    assert.equal(preferences.exportTheme, "dark", "failed preference write keeps previous mode")
+    assert.match(toasts.at(-1)!, /Could not save diagram export theme/)
+    writeFailure = false; themeChoice = "system"
+    await run("open-diagram-export-theme")
+    assert.equal(preferences.exportTheme, "system")
+    assert.equal(readCount, 1, "export theme controls neither fetch nor regenerate")
     const clickTab = async (label: string) => {
       const lines = rendered.captureCharFrame().split("\n")
       const row = lines.findIndex((line) => line.includes(`[${label}]`))
@@ -784,9 +895,11 @@ if (!process.execArgv.includes("--conditions=browser")) {
       await flush()
     }
     await clickTab("Files")
+    assert.equal(toolbarSpan("Files").attributes & selectedStyle, selectedStyle)
+    assert.equal(toolbarSpan("Model").attributes & selectedStyle, 0, "old view clears its selected style")
     assert.match(rendered.captureCharFrame(), /Repository view/)
     assert.doesNotMatch(rendered.captureCharFrame(), /Branched pipeline/)
-    await clickTab("Sidebar")
+    await clickTab("Classic sidebar")
     assert.match(rendered.captureCharFrame(), /Native sidebar contents/)
     assert.equal(replacement(), undefined, "native slot restored rather than imitated")
     await clickTab("Model")
@@ -798,11 +911,55 @@ if (!process.execArgv.includes("--conditions=browser")) {
     let frame = rendered.captureCharFrame()
     assert.deepEqual(opened, [alpha.id], "panel opens only by explicit request")
     assert.match(frame, /Drag divider to resize/)
-    assert.match(frame, /\[Sidebar\]/)
+    assert.match(frame, /\[Classic sidebar\]/)
+    assert.match(frame, /\[Fullscreen\]/, "panel action uses a full, consistent label")
+    rendered.resize(32, 50); setPanelWidth(32)
+    await flush()
+    const narrowHeader = rendered.captureCharFrame().split("\n").slice(0, 14).join("\n")
+    for (const label of ["Model", "Files", "Classic sidebar", "Overview", "Granular", "Pause", "Refresh", "Fullscreen", "Close", "PNG", "SVG", "Save", "Theme: System"]) {
+      assert.ok(narrowHeader.includes(`[${label}]`), `narrow toolbar keeps ${label} whole and reachable`)
+    }
+    const narrowRows = narrowHeader.split("\n")
+    const narrowFull = narrowRows.findIndex((line) => line.includes("[Fullscreen]"))
+    await rendered.mockMouse.click(narrowRows[narrowFull].indexOf("[Fullscreen]") + 2, narrowFull)
+    await flush()
+    assert.equal(fullscreen(), true, "wrapped control remains clickable")
+    await run("open-diagram-panel-fullscreen")
+    const shortLabels = states.get(alpha.id)!
+    const longLabels = { ...shortLabels, views: shortLabels.views.map((view, i) => ({ ...view,
+      label: i === 0 ? "模型".repeat(12) : "Repository configuration" })) }
+    emit(longLabels)
+    await flush()
+    const compactTabs = rendered.captureCharFrame().split("\n").filter((line) => line.includes("模型") || line.includes("Repository"))
+    assert.equal(compactTabs.length, 2)
+    for (const line of compactTabs) assert.match(line, /\[[^\[\]]+…\]/u, "long ASCII and wide Unicode labels keep whole brackets on one row")
+    const repoRow = rendered.captureCharFrame().split("\n").findIndex((line) => line.includes("[Repository"))
+    await rendered.mockMouse.click(9, repoRow)
+    await flush()
+    assert.match(rendered.captureCharFrame(), /Repository view/, "ellipsized tab still selects the original view ID")
+    rendered.resize(80, 50); setPanelWidth(80)
+    await flush()
+    assert.ok(rendered.captureCharFrame().includes(`[${"模型".repeat(12)}]`), "widening restores the complete Unicode caption")
+    assert.ok(rendered.captureCharFrame().includes("[Repository configuration]"))
+    emit(shortLabels)
+    await flush()
+    await clickTab("Model")
+    frame = rendered.captureCharFrame()
     for (const label of ["left", "right", "feedback", "retry"]) assert.ok(frame.includes(label), `${label}\n${frame}`)
     assert.match(frame, /▼/)
-    assert.match(frame, /◀/)
+    assert.match(frame, /[◀▶▲]/)
     assert.doesNotMatch(frame, /\[\d+\]/)
+    const spans = () => rendered.captureSpans().lines.flatMap((line) => line.spans)
+    const labelColor = (label: string) => spans().find((span) => span.text.trim() === label)!.fg.toInts().slice(0, 3)
+    assert.notDeepEqual(labelColor("left"), labelColor("right"), "native branch labels have distinct colors")
+    assert.deepEqual(spans().find((span) => span.text.includes("▼"))!.fg.toInts().slice(0, 3), labelColor("left"), "native arrowhead matches its label")
+    const leftTone = (await layoutDiagram(graph)).edges[0].tone
+    assert.deepEqual(labelColor("left"), RGBA.fromHex(diagramArrowColor(leftTone, true)).toInts().slice(0, 3))
+    setThemeText(RGBA.fromHex("#172033"))
+    await flush()
+    assert.deepEqual(labelColor("left"), RGBA.fromHex(diagramArrowColor(leftTone)).toInts().slice(0, 3), "native light theme uses darker hue")
+    setThemeText("#eeeeee")
+    await flush()
     assert.doesNotMatch(frame, /transform · observed|Arrows reference|No additional detail/)
     assert.match(frame, /Features \*/)
     const row = frame.split("\n").findIndex((line) => line.includes("Features"))
@@ -1085,8 +1242,15 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const large = { ...otherGraph, nodes: Array.from({ length: 24 }, (_, index) => ({
       ...graph.nodes[0], id: `n${index}`, label: `Visible node ${index + 1}`,
     })) }
+    emit(nativeReady(beta.id, 2, { ...large, nodes: large.nodes.map((node) => ({ ...node, label: "Obsolete layout" })) }))
+    await settle() // Start a real worker job, then supersede it before completion.
+    const staleFrames: string[] = []
+    const observeLayout = () => { if (rendered.captureCharFrame().includes("Obsolete layout")) staleFrames.push(rendered.captureCharFrame()) }
+    rendered.renderer.on("frame", observeLayout)
     emit(nativeReady(beta.id, 2, large))
     await flush()
+    rendered.renderer.off("frame", observeLayout)
+    assert.deepEqual(staleFrames, [], "late layout cannot replace the newest requested graph")
     assert.match(rendered.captureCharFrame(), /Visible node 1\b/)
     assert.doesNotMatch(rendered.captureCharFrame(), /Visible node 24/)
     for (let tick = 0; tick < 160; tick++) await rendered.mockMouse.scroll(4, 25, "down")
@@ -1118,8 +1282,9 @@ if (!process.execArgv.includes("--conditions=browser")) {
       ...Array.from({ length: 40 }, (_, index) => ({ from: "cc", to: "aa", label: `route ${index}` }))] }
     emit(nativeReady(beta.id, 4, dense))
     await flush()
-    const denseLayout = layoutDiagram(dense, { columns: 80 })
+    const denseLayout = await layoutDiagram(dense, { columns: 80 })
     assert.ok(denseLayout.width > 80)
+    assert.ok(denseLayout.nodes.every((box) => box.width <= 34), "dense ports do not stretch compact cards")
     await run("j")
     const selectedRow = rendered.captureCharFrame().split("\n").findIndex((line) => line.includes("𠮷"))
     assert.ok(selectedRow >= 0)
@@ -1129,23 +1294,22 @@ if (!process.execArgv.includes("--conditions=browser")) {
     await flush()
     const afterPan = rendered.captureCharFrame()
     assert.notEqual(afterPan, beforePan)
-    assert.match(afterPan.split("\n").slice(5, 15).join("\n"), /┐/, "horizontal input reveals outside return-lane corner")
+    assert.match(afterPan, /[┌┐└┘]/, "horizontal input reveals orthogonal return routing")
     await run("k")
     // Same-selection navigation changes scrolling after the frame, not Solid
     // state; observe the next painted frame rather than the pre-scroll buffer.
     const revealed = await rendered.waitForFrame((frame) => (frame.match(/𠮷/gu) ?? []).length === 10)
     assert.equal((revealed.match(/𠮷/gu) ?? []).length, 10, "keyboard reveals horizontally panned card even when selection stays at first node")
     assert.match(rendered.captureCharFrame(), /Raw inputs/)
-    await run("j")
     rendered.resize(140, 50)
     setPanelWidth(140)
     await flush()
-    assert.equal((rendered.captureCharFrame().match(/𠮷/gu) ?? []).length, 10, "resize exposes entire graph and clamps horizontal offset")
+    assert.equal((rendered.captureCharFrame().match(/𠮷/gu) ?? []).length, 10, "resize keeps the selected card visible and clamps horizontal offset")
     const wideFrame = rendered.captureCharFrame()
     const wideRow = wideFrame.split("\n").findIndex((line) => line.includes("𠮷"))
     await rendered.mockMouse.click(wideFrame.split("\n")[wideRow].indexOf("𠮷") + 1, wideRow)
     await flush()
-    assert.match(rendered.captureCharFrame(), /Raw inputs/, "resized cards remain interactive")
+    assert.doesNotMatch(rendered.captureCharFrame(), /Raw inputs/, "resized cards remain interactive: clicking selection collapses details")
     rendered.resize(80, 50)
     setPanelWidth(80)
     emit(nativeReady(beta.id, 5, large))
@@ -1334,7 +1498,7 @@ if (!process.execArgv.includes("--conditions=browser")) {
     assert.equal(controls.at(-1)?.granularity, "overview")
     await run("open-diagram-sidebar")
     assert.equal(preferences.sidebarVisible, false)
-    assert.deepEqual(Object.keys(preferences), ["sidebarVisible"], "storage holds UI preferences only")
+    assert.deepEqual(Object.keys(preferences).sort(), ["exportTheme", "sidebarVisible"], "storage holds UI preferences only")
     batch(() => { setSelected(alpha.id); setPanel(undefined) })
     await flush()
     await run("open-diagram", "off")

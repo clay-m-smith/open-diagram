@@ -3,15 +3,18 @@
 import type { LocationRef } from "@opencode/client"
 import { Plugin } from "@opencode/plugin/tui"
 import type { Data, PanelInput } from "@opencode/plugin/tui/context"
-import { ScrollBoxRenderable, type ColorInput } from "@opentui/core"
-import { useRenderer } from "@opentui/solid"
-import { createMemo, createRenderEffect, createSignal, For, Show, onCleanup, untrack } from "solid-js"
+import { ScrollBoxRenderable, TextAttributes, type BoxRenderable, type ColorInput } from "@opentui/core"
+import { useRenderer, type JSX } from "@opentui/solid"
+import { createContext, createMemo, createRenderEffect, createSignal, For, Show, onCleanup, untrack, useContext, type Accessor } from "solid-js"
 
 import { CompactDiagram } from "./view.js"
-import { diagramFlowOrder } from "./layout.js"
+import { diagramFlowOrder, diagramTextWidth } from "./layout.js"
 import { analysisViews, DiagramRpc, type DiagramState, type DiagramGraph, initialState } from "./schema.js"
 import { createDiagramExportActions, type ExportAction } from "./export-actions.js"
 import { copyDiagramImage } from "./export-platform.js"
+import type { DiagramExportColorMode } from "./export.js"
+
+type ExportTheme = "system" | DiagramExportColorMode
 
 export const DIAGRAM_PANEL = "open-diagram"
 export const DIAGRAM_CACHE_LIMIT = 64
@@ -328,6 +331,53 @@ export function diagramStatus(state: DiagramState | undefined, problem?: string)
   return `${state.phase}${stale} · ${state.reason}${state.collectionError ? ` · ${state.collectionError}` : ""}${state.cacheError ? ` · ${state.cacheError}` : ""}`
 }
 
+/** Shared compact controls: aligned groups, whole-button wrapping, native colors. */
+const ToolbarColumns = createContext<Accessor<number>>(() => 31)
+const toolbarGraphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+function ToolbarRow(props: { ctx: Plugin.Context; label: string; children: JSX.Element }) {
+  const [columns, setColumns] = createSignal(31)
+  let disposed = false; let queued = false; let measured = 31
+  onCleanup(() => { disposed = true })
+  const resize = function(this: BoxRenderable) {
+    if (this.width <= 0) return
+    measured = Math.max(3, Math.floor(this.width))
+    if (queued) return
+    queued = true
+    // Defer text changes until Yoga has finished traversing the current frame.
+    queueMicrotask(() => { queued = false; if (!disposed) setColumns(measured) })
+  }
+  return <box width="100%" flexDirection="row" flexShrink={0} alignItems="flex-start">
+    <text width={7} flexShrink={0} fg={diagramColors(props.ctx.theme).subdued}>{props.label}</text>
+    <box flexGrow={1} flexBasis={0} minWidth={0} flexDirection="row" flexWrap="wrap" columnGap={1} onSizeChange={resize}>
+      <ToolbarColumns.Provider value={columns}>{props.children}</ToolbarColumns.Provider>
+    </box>
+  </box>
+}
+
+function ToolbarButton(props: { ctx: Plugin.Context; label: string; active?: boolean; muted?: boolean; disabled?: boolean; run(): unknown }) {
+  const colors = () => diagramColors(props.ctx.theme)
+  const columns = useContext(ToolbarColumns)
+  const caption = createMemo(() => {
+    const label = props.label.replace(/\s+/gu, " ").trim()
+    const limit = Math.max(1, columns() - 2)
+    if (diagramTextWidth(label) <= limit) return label
+    let result = ""
+    for (const { segment } of toolbarGraphemes.segment(label)) {
+      if (diagramTextWidth(result + segment) > limit - 1) break
+      result += segment
+    }
+    return `${result.trimEnd()}…`
+  })
+  return <text flexShrink={0} maxWidth="100%" wrapMode="none" selectable={false}
+    fg={props.disabled || (props.muted && !props.active) ? colors().subdued : colors().text}
+    attributes={props.active ? TextAttributes.BOLD | TextAttributes.UNDERLINE : TextAttributes.NONE}
+    onMouseUp={(event) => {
+      if (event.button !== 0) return
+      event.stopPropagation()
+      if (!props.disabled) void props.run()
+    }}>{`[${caption()}]`}</text>
+}
+
 function DiagramPanel(props: {
   ctx: Plugin.Context
   panel: PanelInput
@@ -339,6 +389,8 @@ function DiagramPanel(props: {
   choose(id: string): void
   export(action: ExportAction, graph?: DiagramGraph, selected?: string): Promise<void>
   exporting(): boolean
+  exportTheme(): ExportTheme
+  chooseExportTheme(): Promise<void>
 }) {
   const { ctx, monitor } = props
   const colors = () => diagramColors(ctx.theme)
@@ -369,7 +421,8 @@ function DiagramPanel(props: {
     const views = state() ? analysisViews(state()!) : []
     return views.find((view) => view.id === props.tab()) ?? views[0]
   })
-  const blocks = createMemo(() => view() ? diagramFlowOrder(view()!.graph) : [])
+  const [arranged, setArranged] = createSignal<{ graph: DiagramGraph; nodes: DiagramGraph["nodes"] }>()
+  const blocks = createMemo(() => arranged() && arranged()!.graph === view()?.graph ? arranged()!.nodes : view() ? diagramFlowOrder(view()!.graph) : [])
   const nodeID = (id: string) => `open-diagram-node-${id}`
   const select = (id: string | undefined) => {
     setSelected(id)
@@ -406,7 +459,7 @@ function DiagramPanel(props: {
   const actions = [
     { get label() { return state()?.mode === "off" ? "Resume" : "Pause" }, run: props.pause },
     { label: "Refresh", run: () => props.control({ refresh: true }) },
-    { get label() { return props.panel.presentation === "fullscreen" ? "Restore" : "Full" }, run: props.panel.toggleFullscreen },
+    { get label() { return props.panel.presentation === "fullscreen" ? "Restore" : "Fullscreen" }, run: props.panel.toggleFullscreen },
     { label: "Close", run: props.close },
   ]
 
@@ -417,75 +470,65 @@ function DiagramPanel(props: {
       </text>
       <ViewTabs ctx={ctx} state={state()} tab={props.tab()} choose={props.choose} sidebar={props.close} />
       <DepthTabs ctx={ctx} state={state()} control={props.control} />
-      <box flexDirection="row" flexWrap="wrap" flexShrink={0}>
-        <For each={actions}>{(action) => (
-          <text fg={colors().text} onMouseUp={(event) => {
-            if (event.button !== 0) return
-            event.stopPropagation()
-            void action.run()
-          }}>{`[${action.label}] `}</text>
-        )}</For>
-      </box>
-      <DiagramExportRow ctx={ctx} state={state()} tab={props.tab()} selected={selected()} run={props.export} busy={props.exporting()} />
+      <ToolbarRow ctx={ctx} label="Tools">
+        <For each={actions}>{(action) => <ToolbarButton ctx={ctx} label={action.label} run={action.run} />}</For>
+      </ToolbarRow>
+      <DiagramExportRow ctx={ctx} state={state()} tab={props.tab()} selected={selected()} run={props.export} busy={props.exporting()}
+        theme={props.exportTheme()} chooseTheme={props.chooseExportTheme} />
       <Show when={props.panel.presentation !== "fullscreen"}>
         <text fg={colors().subdued}>Drag divider to resize</text>
       </Show>
       <scrollbox ref={(value) => { scroll = value }} flexGrow={1} minHeight={0} scrollX={false} focused={props.panel.focused}>
         <DiagramContent ctx={ctx} state={state()} problem={monitor.problem()} tab={props.tab()} selected={selected()}
-          select={(id) => { props.panel.focus(); select(id) }} />
+          select={(id) => { props.panel.focus(); select(id) }} onLayout={(graph, nodes) => {
+            setArranged({ graph, nodes })
+            if (selected()) { reveal = selected(); renderer.requestRender() }
+          }} />
       </scrollbox>
     </box>
   )
 }
 
 function DiagramExportRow(props: { ctx: Plugin.Context; state?: DiagramState; tab?: string; selected?: string;
-  run(action: ExportAction, graph?: DiagramGraph, selected?: string): Promise<void>; busy: boolean }) {
+  run(action: ExportAction, graph?: DiagramGraph, selected?: string): Promise<void>; busy: boolean;
+  theme: ExportTheme; chooseTheme(): Promise<void> }) {
   const colors = () => diagramColors(props.ctx.theme)
   const graph = () => {
     const views = props.state ? analysisViews(props.state) : []
     return (views.find((view) => view.id === props.tab) ?? views[0])?.graph
   }
-  return <box flexDirection="row" flexWrap="wrap" flexShrink={0}>
-    <For each={["png", "svg", "save"] as const}>{(action) => <text
-      fg={graph() && !props.busy ? colors().text : colors().subdued}
-      onMouseUp={(event) => {
-        if (event.button !== 0) return
-        event.stopPropagation()
-        if (graph() && !props.busy) void props.run(action, graph(), props.selected)
-      }}>{`[${action === "save" ? "Save" : action.toUpperCase()}] `}</text>}</For>
+  return <ToolbarRow ctx={props.ctx} label="Export">
+    <For each={["png", "svg", "save"] as const}>{(action) => <ToolbarButton ctx={props.ctx}
+      label={action === "save" ? "Save" : action.toUpperCase()} disabled={!graph() || props.busy}
+      run={() => props.run(action, graph(), props.selected)} />}</For>
     <Show when={props.busy}><text fg={colors().subdued}>…</text></Show>
-  </box>
+    <ToolbarButton ctx={props.ctx} label={`Theme: ${props.theme[0].toUpperCase()}${props.theme.slice(1)}`}
+      disabled={props.busy} run={props.chooseTheme} />
+  </ToolbarRow>
 }
 
 function ViewTabs(props: { ctx: Plugin.Context; state?: DiagramState; tab?: string; choose(id: string): void; sidebar(): void }) {
-  const colors = () => diagramColors(props.ctx.theme)
   const views = () => props.state ? analysisViews(props.state) : []
-  return <box flexDirection="row" flexWrap="wrap" flexShrink={0}>
+  const active = () => props.tab === "$sidebar" ? "$sidebar" : (views().find((view) => view.id === props.tab) ?? views()[0])?.id ?? "$diagram"
+  return <ToolbarRow ctx={props.ctx} label="View">
     <For each={views().length ? views() : [{ id: "$diagram", label: "Diagram" }]}>{(view) =>
-      <text fg={props.tab === view.id || (!props.tab && view.id === views()[0]?.id) ? colors().text : colors().subdued}
-        onMouseUp={(event) => { if (event.button === 0) { event.stopPropagation(); props.choose(view.id) } }}>{`[${view.label}] `}</text>
+      <ToolbarButton ctx={props.ctx} label={view.label} active={active() === view.id} muted run={() => props.choose(view.id)} />
     }</For>
-    <text fg={props.tab === "$sidebar" ? colors().text : colors().subdued}
-      onMouseUp={(event) => { if (event.button === 0) { event.stopPropagation(); props.sidebar() } }}>[Sidebar]</text>
-  </box>
+    <ToolbarButton ctx={props.ctx} label="Classic sidebar" active={active() === "$sidebar"} muted run={props.sidebar} />
+  </ToolbarRow>
 }
 
 function DepthTabs(props: { ctx: Plugin.Context; state?: DiagramState; control(input: Control): Promise<void> }) {
-  const colors = () => diagramColors(props.ctx.theme)
-  return <box flexDirection="row" flexWrap="wrap" flexShrink={0}>
-    <text fg={colors().subdued}>Depth </text>
+  return <ToolbarRow ctx={props.ctx} label="Depth">
     <For each={["overview", "granular"] as const}>{(granularity) =>
-      <text fg={(props.state?.granularity ?? "overview") === granularity ? colors().text : colors().subdued}
-        onMouseUp={(event) => {
-          if (event.button !== 0) return
-          event.stopPropagation()
-          void props.control({ granularity })
-        }}>{`[${granularity === "overview" ? "Overview" : "Granular"}] `}</text>
+      <ToolbarButton ctx={props.ctx} label={granularity === "overview" ? "Overview" : "Granular"}
+        active={(props.state?.granularity ?? "overview") === granularity} muted run={() => props.control({ granularity })} />
     }</For>
-  </box>
+  </ToolbarRow>
 }
 
-function DiagramContent(props: { ctx: Plugin.Context; state?: DiagramState; problem?: string; tab?: string; selected?: string; select(id: string | undefined): void }) {
+function DiagramContent(props: { ctx: Plugin.Context; state?: DiagramState; problem?: string; tab?: string; selected?: string; select(id: string | undefined): void;
+  onLayout?(graph: DiagramGraph, nodes: DiagramGraph["nodes"]): void }) {
   const colors = () => diagramColors(props.ctx.theme)
   const view = () => {
     const views = props.state ? analysisViews(props.state) : []
@@ -499,7 +542,7 @@ function DiagramContent(props: { ctx: Plugin.Context; state?: DiagramState; prob
       <text fg={colors().subdued}>{`${view()!.graph.title}${props.state?.stale ? " · stale" : ""}`}</text>
       <CompactDiagram graph={view()!.graph} changed={props.state?.changedViews[view()!.id] ?? props.state?.changed ?? []}
         sources={props.state?.sources ?? []} selected={props.selected} onSelect={props.select}
-        colors={colors()} />
+        colors={colors()} onLayout={(nodes) => props.onLayout?.(view()!.graph, nodes)} />
     </Show>
   </box>
 }
@@ -509,8 +552,10 @@ export default Plugin.define({
   setup(ctx) {
     const colors = () => diagramColors(ctx.theme)
     const [preferences, updatePreferences] = ctx.storage.store("diagram-preferences", {
-      initial: { sidebarVisible: true },
+      initial: { sidebarVisible: true, exportTheme: "system" as ExportTheme },
     })
+    // Older preference records lack this field; unknown values also follow host.
+    const exportTheme = (): ExportTheme => preferences.exportTheme === "dark" || preferences.exportTheme === "light" ? preferences.exportTheme : "system"
     const monitor = createDiagramMonitor(ctx.client.rpc(DiagramRpc))
     const removeHostEvents = bindDiagramMonitor(monitor, ctx.data)
     const tabs = new Map<string, string>()
@@ -523,6 +568,7 @@ export default Plugin.define({
     const [exporting, setExporting] = createSignal(false)
     const exportAction = createDiagramExportActions({
       directory: process.cwd(),
+      colorMode: () => exportTheme() === "system" ? ctx.themeMode : exportTheme() as DiagramExportColorMode,
       chooseFormat: () => ctx.ui.dialog.select({ title: "Save diagram", options: [
         { title: "PNG image", value: "png" as const }, { title: "SVG vector", value: "svg" as const },
       ] }),
@@ -558,6 +604,18 @@ export default Plugin.define({
       return session
     }
     const toast = (message: string) => ctx.ui.toast.show({ title: "Diagram", message, variant: "warning" })
+    const chooseExportTheme = async () => {
+      if (disposed || exporting()) return
+      setExporting(true)
+      try {
+        const theme = await ctx.ui.dialog.select({ title: "Diagram export theme", current: exportTheme(), options: [
+          { title: "System (follow OpenCode)", value: "system" as const },
+          { title: "Dark", value: "dark" as const }, { title: "Light", value: "light" as const },
+        ] })
+        if (theme && !disposed) await updatePreferences((draft) => { draft.exportTheme = theme })
+      } catch { if (!disposed) toast("Could not save diagram export theme") }
+      finally { if (!disposed) setExporting(false) }
+    }
     const open = (fullscreen = false, panel = false) => {
       if (disposed) return false
       const session = selectCurrent()
@@ -663,8 +721,9 @@ export default Plugin.define({
     }
     const command = async (input = "") => {
       const action = input.trim().toLowerCase() || "open"
+      if (action === "export-theme") { await chooseExportTheme(); return }
       if (!["open", "auto", "on", "off", "refresh", "pause", "resume", "panel", "fullscreen", "sidebar", "close", "overview", "granular"].includes(action)) {
-        toast("Usage: /open-diagram [auto|on|off|refresh|pause|resume|panel|fullscreen|sidebar|close|overview|granular]")
+        toast("Usage: /open-diagram [auto|on|off|refresh|pause|resume|panel|fullscreen|sidebar|close|overview|granular|export-theme]")
         return
       }
       if (action === "close" || action === "sidebar") { close(); return }
@@ -694,17 +753,16 @@ export default Plugin.define({
           if (replace && !replaceSidebar) replaceSidebar = ctx.ui.slot({ replace: "sidebar.content", render: (input) =>
             <Show when={monitor.state()?.sessionID === input.sessionID}>
               <DepthTabs ctx={ctx} state={monitor.state()} control={control} />
-              <box flexDirection="row" flexWrap="wrap" flexShrink={0}>
+              <ToolbarRow ctx={ctx} label="Tools">
                 <For each={[
-                  { label: "↻", run: () => control({ refresh: true }) },
                   { get label() { return monitor.state()?.mode === "off" ? "Resume" : "Pause" }, run: () => pause() },
+                  { label: "Refresh", run: () => control({ refresh: true }) },
                   { label: "Expand", run: () => open(false, true) },
-                ]}>{(action) => <text fg={colors().subdued} onMouseUp={(event) => {
-                  if (event.button === 0) { event.stopPropagation(); void action.run() }
-                }}>{`[${action.label}] `}</text>}</For>
+                ]}>{(action) => <ToolbarButton ctx={ctx} label={action.label} run={action.run} />}</For>
                 <text fg={colors().subdued}>{monitor.state()?.phase}</text>
-              </box>
-              <DiagramExportRow ctx={ctx} state={monitor.state()} tab={tab()} selected={node()} run={exportDiagram} busy={exporting()} />
+              </ToolbarRow>
+              <DiagramExportRow ctx={ctx} state={monitor.state()} tab={tab()} selected={node()} run={exportDiagram} busy={exporting()}
+                theme={exportTheme()} chooseTheme={chooseExportTheme} />
               <DiagramContent ctx={ctx} state={monitor.state()} problem={monitor.problem()} tab={tab()} selected={node()} select={setNode} />
             </Show>,
           })
@@ -715,7 +773,7 @@ export default Plugin.define({
           commands: [{
             id: "open-diagram", title: "Open live diagram", group: "Open Diagram", palette: true,
             slash: { name: "open-diagram", arguments: true }, run: command,
-           }, ...(["auto", "on", "off", "refresh", "panel", "fullscreen", "overview", "granular"] as const).map((action) => ({
+           }, ...(["auto", "on", "off", "refresh", "panel", "fullscreen", "overview", "granular", "export-theme"] as const).map((action) => ({
             id: `open-diagram-${action}`, title: `Diagram: ${action}`, group: "Open Diagram", palette: true as const,
             slash: { name: `open-diagram-${action}` }, run: () => command(action),
           })), {
@@ -735,7 +793,8 @@ export default Plugin.define({
       render: (panel) => (
         <Show when={panel.name === DIAGRAM_PANEL}>
            <DiagramPanel ctx={ctx} panel={panel} monitor={monitor} control={control} pause={() => pause()}
-             tab={tab} choose={choose} close={close} export={exportDiagram} exporting={exporting} />
+             tab={tab} choose={choose} close={close} export={exportDiagram} exporting={exporting}
+             exportTheme={exportTheme} chooseExportTheme={chooseExportTheme} />
         </Show>
       ),
     })

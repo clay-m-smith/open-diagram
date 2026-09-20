@@ -1,11 +1,12 @@
 import { resolve, extname } from "node:path"
 import type { DiagramGraph } from "./schema.js"
-import { renderDiagramPNG, renderDiagramSVG } from "./export.js"
+import { renderDiagramPNG, renderDiagramSVG, type DiagramExportColorMode } from "./export.js"
 import { saveDiagramFile, type ClipboardCopyResult } from "./export-platform.js"
 
 export type ExportAction = "png" | "svg" | "save"
 export type ExportHost = {
   directory: string
+  colorMode(): DiagramExportColorMode
   chooseFormat(): Promise<"png" | "svg" | undefined>
   choosePath(value: string, format: "png" | "svg", fallback: boolean, reason?: string): Promise<string | undefined>
   copySVG(text: string, signal: AbortSignal): Promise<ClipboardCopyResult>
@@ -22,9 +23,10 @@ export function createDiagramExportActions(host: ExportHost, signal: AbortSignal
     const snapshot = structuredClone(graph)
     busy = true
     try {
+      const options = { selected, colorMode: host.colorMode() }
       const format = action === "save" ? await host.chooseFormat() : action
       if (!format || signal.aborted) return
-      const bytes = format === "svg" ? renderDiagramSVG(snapshot, { selected }) : await renderDiagramPNG(snapshot, { selected })
+      const bytes = format === "svg" ? await renderDiagramSVG(snapshot, options) : await renderDiagramPNG(snapshot, options)
       if (signal.aborted) return
       let reason: string | undefined
       if (action !== "save") {

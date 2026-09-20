@@ -7,7 +7,7 @@ test("schema-valid XML-forbidden characters become replacement glyphs in SVG and
   const graph = GraphSchema.parse({ title: "Model\uFFFF\uFFFE\uD800", summary: "", nodes: [
     { id: "a", label: "Input\uFFFF", kind: "input", status: "observed", detail: "Detail\uFFFE", evidence: ["s"] },
   ], edges: [{ from: "a", to: "a", label: "Loop\uDFFF" }] })
-  const svg = renderDiagramSVG(graph, { selected: "a" })
+  const svg = await renderDiagramSVG(graph, { selected: "a" })
   assert.doesNotMatch(svg, /[\uFFFE\uFFFF\uD800-\uDFFF]/u)
   assert.match(svg, /Model\uFFFD\uFFFD\uFFFD/)
   const png = await renderDiagramPNG(graph, { selected: "a" })

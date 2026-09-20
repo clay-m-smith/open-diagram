@@ -26,6 +26,7 @@
   "dependencies": {
     "@opencode/plugin": "2.0.7",
     "@resvg/resvg-js": "2.6.2",
+    "elkjs": "0.12.0",
     "string-width": "7.2.0",
     "zod": "4.1.8"
   },
