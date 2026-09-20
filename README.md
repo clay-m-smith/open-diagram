@@ -7,8 +7,13 @@ more. Mixed projects get separate view tabs instead of one flattened diagram.
 The default surface is OpenCode's compact native sidebar. Select **Sidebar** to
 restore its original contents. Blocks show labels and directed links; select a
 block for its description and functional explanation. **Sources** reveals compact
-file references separately, without tool-call logs. `*` marks changes; `~` marks planned blocks;
-`↺` marks cycle edges. The host owns scrolling, sidebar visibility, and resizing.
+file references separately, without tool-call logs. Cards fit their contents instead
+of stretching across the panel. Real connectors show flow without numbered block
+references: adjacent steps use a central spine, while branches, joins, and return
+paths use outside lanes. Disconnected cards get no implied arrow. `*` marks changes;
+`~` marks planned blocks; `↺` marks return paths; `╳` is a crossing, not a junction.
+Dense graphs can scroll horizontally rather than hiding connections. The host
+retains vertical scrolling, sidebar visibility, and resizing.
 Server snapshots preserve every view and tracking mode across reloads.
 Viewing is cache-only: there is no periodic polling or evidence collection on
 view/session-tab changes. The TUI keeps the last 64 visited sessions in memory,
@@ -82,6 +87,7 @@ The **[PNG] [SVG] [Save]** row exports the full active cached diagram, not a
 terminal screenshot. It includes node labels, directed links, and the selected
 block's displayed details; it excludes controls, tabs, status, and Sources UI.
 Stale but valid cached diagrams remain exportable. Export never calls a model.
+Terminal and image exports share the same content-sized card and connector layout.
 
 - **SVG** copies a vector image using `image/svg+xml`, not plain-text markup.
   Paste into an SVG-capable application; PNG is more widely supported.

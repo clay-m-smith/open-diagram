@@ -1,12 +1,8 @@
 /** @jsxImportSource @opentui/solid */
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
-import type { ColorInput } from "@opentui/core"
-import { layoutDiagram, type DiagramLink } from "./layout.js"
+import { createEffect, createMemo, createSignal, For, onCleanup } from "solid-js"
+import type { BoxRenderable, ColorInput } from "@opentui/core"
+import { diagramTextWidth, diagramWires, layoutDiagram } from "./layout.js"
 import type { DiagramGraph } from "./schema.js"
-
-export function compactLink(edge: DiagramLink): string {
-  return edge.text.replace(" ──▶ ", " → ").replace(" · ↺ cycle", " ↺").replace(" · ", " ")
-}
 
 /** Present source identities, not the operations used to collect them. */
 export function sourceCaption(label: string): string {
@@ -30,14 +26,45 @@ export function CompactDiagram(props: {
   onSelect(id: string | undefined): void
   colors: { text: ColorInput; subdued: ColorInput; accent: ColorInput; border: ColorInput }
 }) {
-  const blocks = createMemo(() => layoutDiagram(props.graph))
+  const [columns, setColumns] = createSignal(38)
+  let disposed = false
+  let queued = false
+  let measured = 38
+  onCleanup(() => { disposed = true })
+  const resize = function(this: BoxRenderable) {
+    if (this.width <= 0) return
+    measured = this.width
+    if (queued) return
+    queued = true
+    // Native Yoga is traversing children during onSizeChange. Replacing routed
+    // cards inside that traversal can expose removed nodes with NaN dimensions.
+    queueMicrotask(() => { queued = false; if (!disposed) setColumns(measured) })
+  }
   const sources = createMemo(() => new Map(props.sources.map((source) => [source.id, source.label])))
   const [sourcesFor, setSourcesFor] = createSignal<string>()
+  const layout = createMemo(() => layoutDiagram(props.graph, { columns: columns(), selected: props.selected, changed: props.changed,
+    sourceControl: true, sources: sourcesFor() === props.selected && props.selected
+      ? props.graph.nodes.find((node) => node.id === props.selected)?.evidence.map((id) => sourceCaption(sources().get(id) ?? id)) : undefined }))
   const selectionContent = createMemo(() => JSON.stringify([props.graph, props.selected]))
   createEffect(() => { selectionContent(); setSourcesFor(undefined) })
-  return <box width="100%" flexDirection="column" flexShrink={0}>
-    <For each={blocks()}>{(block) => <box flexDirection="column" flexShrink={0}>
-      <box id={`open-diagram-node-${block.node.id}`} border borderStyle="rounded" flexDirection="column" flexShrink={0}
+  return <box width="100%" flexDirection="column" flexShrink={0}
+    onSizeChange={resize}>
+    <scrollbox width="100%" height={layout().height + (layout().width > columns() ? 1 : 0)} scrollX={true} scrollY={false} flexShrink={0}
+      verticalScrollbarOptions={{ visible: false }} horizontalScrollbarOptions={{ visible: layout().width > columns() }}
+      contentOptions={{ width: Math.max(columns(), layout().width), minWidth: Math.max(columns(), layout().width),
+        maxWidth: Math.max(columns(), layout().width), height: layout().height, minHeight: layout().height, maxHeight: layout().height }}>
+    <box width={Math.max(columns(), layout().width)} height={layout().height} flexShrink={0} flexDirection="column">
+    <box position="absolute" top={0} left={Math.max(0, Math.floor((columns() - layout().width) / 2))} width={layout().width} height={layout().height} flexDirection="column">
+      <text position="absolute" left={0} top={0} width={layout().width} height={layout().height} selectable={false} fg={props.colors.subdued}>{diagramWires(layout())}</text>
+      <For each={layout().edges}>{(edge) => <text position="absolute" left={edge.labelX} top={edge.labelY}
+        width={Math.max(1, ...edge.labelLines.map(diagramTextWidth))} height={edge.labelLines.length}
+        fg={props.colors.subdued} onMouseUp={(event) => {
+          if (event.button !== 0) return
+          event.stopPropagation(); props.onSelect(edge.to)
+        }}>{edge.labelLines.join("\n")}</text>}</For>
+    <For each={layout().nodes}>{(block) =>
+      <box id={`open-diagram-node-${block.node.id}`} position="absolute" left={block.x} top={block.y}
+        width={block.width} height={block.height} border borderStyle="rounded" flexDirection="column" paddingLeft={1} paddingRight={1}
         borderColor={props.changed.includes(block.node.id) ? props.colors.accent
           : props.selected === block.node.id ? props.colors.text : props.colors.border}
         onMouseUp={(event) => {
@@ -45,26 +72,15 @@ export function CompactDiagram(props: {
           event.stopPropagation()
           props.onSelect(props.selected === block.node.id ? undefined : block.node.id)
         }}>
-        <text fg={props.colors.text}>{`[${block.number}] ${block.node.label}${block.node.status === "planned" ? " ~" : ""}${props.changed.includes(block.node.id) ? " *" : ""}`}</text>
-        <Show when={props.selected === block.node.id}>
-          <text fg={props.colors.subdued}>{`${block.node.kind} · ${block.node.status}`}</text>
-          <Show when={block.node.detail}><text fg={props.colors.text}>{block.node.detail}</text></Show>
-          <Show when={block.node.behavior}><text fg={props.colors.text}>{block.node.behavior}</text></Show>
-          <text fg={props.colors.subdued} onMouseUp={(event) => {
+        <For each={block.lines}>{(line) => <text height={1} flexShrink={0}
+          fg={line.role === "label" || line.role === "detail" ? props.colors.text : props.colors.subdued} onMouseUp={(event) => {
+            if (line.role !== "sources") return
             if (event.button !== 0) return
             event.stopPropagation()
             setSourcesFor(sourcesFor() === block.node.id ? undefined : block.node.id)
-          }}>{sourcesFor() === block.node.id ? "[Hide sources]" : "[Sources]"}</text>
-          <Show when={sourcesFor() === block.node.id}>
-            <For each={block.node.evidence}>{(id) => <text fg={props.colors.subdued}>{sourceCaption(sources().get(id) ?? id)}</text>}</For>
-          </Show>
-        </Show>
+          }}>{line.text}</text>}</For>
       </box>
-      <For each={block.outgoing}>{(edge) => <text fg={props.colors.subdued} onMouseUp={(event) => {
-        if (event.button !== 0) return
-        event.stopPropagation()
-        props.onSelect(edge.to)
-      }}>{compactLink(edge)}</text>}</For>
-    </box>}</For>
+    }</For>
+    </box></box></scrollbox>
   </box>
 }

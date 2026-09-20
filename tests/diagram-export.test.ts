@@ -21,6 +21,9 @@ test("SVG exports full graph with safe labels and only displayed details, no chr
   for (const value of ["&lt;script&gt;", "&amp;", "Expanded details", "Functional explanation", "モデル × 128", "branch &amp; join", "feedback", "self"]) assert.ok(svg.includes(value), value)
   assert.doesNotMatch(svg, /<script>|PRIVATE_CITATION|Unselected details|Not displayed|\[Sources\]|\[Refresh\]|\[Pause\]|\[Expand\]|stale|foreignObject|href=/)
   assert.equal((svg.match(/rx="10"/g) ?? []).length, graph.nodes.length)
+  assert.equal((svg.match(/marker-end="url\(#arrow\)"/g) ?? []).length, graph.edges.length)
+  assert.doesNotMatch(svg, /\[1\]|\[2\]/)
+  for (const match of svg.matchAll(/<rect[^>]*width="(\d+)"[^>]*rx="10"/g)) assert.ok(Number(match[1]) < 600, "content-sized cards, not full-width rectangles")
   assert.doesNotMatch(renderDiagramSVG(graph), /Expanded details|Functional explanation/)
 })
 

@@ -29,6 +29,8 @@ text = ""
 stage = 0
 screen = TerminalScreen(170, 55)
 sidebar_left = 128
+ready_position = None
+ready_since = 0
 def click(position):
     x, y = position
     os.write(master, f"\x1b[<0;{x + 2};{y + 1}M\x1b[<0;{x + 2};{y + 1}m".encode())
@@ -36,9 +38,11 @@ try:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         readable, _, _ = select.select([master], [], [], 0.1)
-        if readable:
+        # A stable final paint need not emit another frame. Advance initial
+        # readiness on select timeouts too, without retrying the eventual click.
+        if readable or (stage == 0 and ready_position is not None):
             try:
-                data = os.read(master, 65536)
+                data = os.read(master, 65536) if readable else b""
             except OSError as error:
                 if error.errno == errno.EIO:
                     break
@@ -63,13 +67,21 @@ try:
                     stage = 8
                     break
                 continue
-            if stage == 0 and "Embedding classifier" in text and "[Model]" in text and "[Files]" in text and "[Sidebar]" in text and screen.find("[2] Embedding"):
+            if stage == 0 and "Embedding classifier" in text and "[Model]" in text and "[Files]" in text and "[Sidebar]" in text and screen.find("Embedding *"):
+                # Initial paint precedes measured-width reflow. Do not press an
+                # old card that gets replaced before its mouse-up is delivered.
+                position = screen.find("Embedding *")
+                if position != ready_position:
+                    ready_position, ready_since = position, time.monotonic()
+                if time.monotonic() - ready_since < 0.1:
+                    continue
                 normal, muted = screen.foreground("[Overview]"), screen.foreground("Depth ")
                 assert normal is not None and muted is not None and normal != muted, "Plugin must render distinct host text/muted theme colors, not undefined-token white"
                 print("OK: actual native diagram retains distinct host theme colors")
                 print("OK: actual OpenCode TUI loaded standalone bridge and rendered compact native sidebar tabs")
-                sidebar_left = screen.find("[2] Embedding")[0] - 2
-                click(screen.find("[2] Embedding"))
+                sidebar_left = screen.find("Depth ")[0]
+                assert "[1]" not in screen.text(sidebar_left) and "▼" in screen.text(sidebar_left)
+                click(screen.find("Embedding *"))
                 stage = 1
             elif stage == 1 and "Maps token indices" in screen.text() and "Encoder layer" in screen.text() and screen.find("[Sources]"):
                 assert "read ·" not in screen.text(sidebar_left)

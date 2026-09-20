@@ -3,10 +3,12 @@
 import type { LocationRef } from "@opencode/client"
 import { Plugin } from "@opencode/plugin/tui"
 import type { Data, PanelInput } from "@opencode/plugin/tui/context"
-import type { ColorInput, ScrollBoxRenderable } from "@opentui/core"
-import { createMemo, createRenderEffect, createSignal, For, Show, untrack } from "solid-js"
+import { ScrollBoxRenderable, type ColorInput } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
+import { createMemo, createRenderEffect, createSignal, For, Show, onCleanup, untrack } from "solid-js"
 
 import { CompactDiagram } from "./view.js"
+import { diagramFlowOrder } from "./layout.js"
 import { analysisViews, DiagramRpc, type DiagramState, type DiagramGraph, initialState } from "./schema.js"
 import { createDiagramExportActions, type ExportAction } from "./export-actions.js"
 import { copyDiagramImage } from "./export-platform.js"
@@ -341,18 +343,38 @@ function DiagramPanel(props: {
   const { ctx, monitor } = props
   const colors = () => diagramColors(ctx.theme)
   const [selected, setSelected] = createSignal<string>()
+  const renderer = useRenderer()
   let scroll: ScrollBoxRenderable | undefined
+  let reveal: string | undefined
+  const revealSelected = () => {
+    const id = reveal
+    reveal = undefined
+    if (!id || id !== selected()) return
+    // The graph owns horizontal panning; the panel owns vertical scrolling.
+    // Reveal through both, including repeated j/k at an already-selected end.
+    let ancestor = scroll?.content.findDescendantById(nodeID(id))?.parent
+    while (ancestor && ancestor !== scroll) {
+      if (ancestor instanceof ScrollBoxRenderable) ancestor.scrollChildIntoView(nodeID(id))
+      ancestor = ancestor.parent
+    }
+    scroll?.scrollChildIntoView(nodeID(id))
+  }
+  // Selection rebuilds content-sized cards. Scroll only after native layout has
+  // measured their current geometry, not immediately after updating the signal.
+  renderer.on("frame", revealSelected)
+  onCleanup(() => renderer.off("frame", revealSelected))
   let previousSession: string | undefined
   const state = createMemo(() => monitor.state()?.sessionID === props.panel.sessionID ? monitor.state() : undefined)
   const view = createMemo(() => {
     const views = state() ? analysisViews(state()!) : []
     return views.find((view) => view.id === props.tab()) ?? views[0]
   })
-  const blocks = createMemo(() => view()?.graph.nodes ?? [])
+  const blocks = createMemo(() => view() ? diagramFlowOrder(view()!.graph) : [])
   const nodeID = (id: string) => `open-diagram-node-${id}`
   const select = (id: string | undefined) => {
     setSelected(id)
-    if (id) scroll?.scrollChildIntoView(nodeID(id))
+    reveal = id
+    if (id) renderer.requestRender()
   }
   createRenderEffect(() => {
     const session = monitor.session()

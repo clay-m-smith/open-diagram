@@ -13,7 +13,7 @@ import { RGBA } from "@opentui/core"
 import { batch, createComponent, createSignal, Show } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 
-import { layoutDiagram } from "../src/diagram/layout.js"
+import { diagramTextWidth, diagramWires, layoutDiagram, wrapDiagramText } from "../src/diagram/layout.js"
 import { type DiagramGraph, type DiagramState, initialState } from "../src/diagram/schema.js"
 import {
   createDiagramMonitor, DIAGRAM_CACHE_LIMIT, DIAGRAM_TIMEOUT_MS, diagramStatus, diagramColors,
@@ -91,31 +91,57 @@ if (!process.execArgv.includes("--conditions=browser")) {
       feedback: { warning: { base: rgba.accent } } }, border: { base: rgba.border } }), rgba)
   })
 
-  test("vertical graph preserves every directed edge, forks, joins, cycles and isolated nodes", () => {
+  test("content-sized flow preserves edges, routes around cards, and never invents adjacency", () => {
     const isolated = { ...graph.nodes[0], id: "isolated", label: "Unconnected" }
-    const blocks = layoutDiagram({ ...graph, nodes: [...graph.nodes, isolated] })
-    assert.equal(blocks.length, 5)
-    const edges = blocks.flatMap((block) => block.outgoing)
+    const layout = layoutDiagram({ ...graph, nodes: [...graph.nodes, isolated] }, { columns: 80 })
+    assert.equal(layout.nodes.length, 5)
+    const edges = layout.edges
     assert.deepEqual(edges.map(({ from, to, label }) => ({ from, to, label })), graph.edges)
-    assert.match(blocks[0].outgoing[0].text, /├─ \[1\] ──▶ \[2\] · left/)
-    assert.match(blocks[0].outgoing[1].text, /└─ \[1\] ──▶ \[3\] · right/)
-    assert.equal(blocks[3].incoming, "join ◀── [2], [3], [4]")
+    assert.ok(layout.nodes.every((box) => box.width < 30), "short cards never stretch to panel width")
+    assert.ok(edges.every((edge) => edge.from !== "isolated" && edge.to !== "isolated"))
     assert.equal(edges.find((edge) => edge.label === "left")!.cycle, false)
     assert.equal(edges.find((edge) => edge.label === "predictions")!.cycle, false)
-    assert.equal(edges.find((edge) => edge.label === "features")!.cycle, true)
+    assert.equal(edges.find((edge) => edge.label === "features")!.cycle, false)
     assert.equal(edges.find((edge) => edge.label === "feedback")!.cycle, true)
-    assert.match(edges.find((edge) => edge.label === "retry")!.text, /\[4\] ──▶ \[4\].*↺ cycle/)
-    assert.deepEqual(blocks[4].outgoing, [])
-    assert.equal(blocks[4].incoming, "no incoming edges")
+    assert.equal(edges.find((edge) => edge.label === "retry")!.cycle, true)
+    assert.doesNotMatch(diagramWires(layout), /\[\d+\]/)
+    assert.match(diagramWires(layout), /▼/)
+    assert.match(diagramWires(layout), /◀/)
+    for (const edge of edges) {
+      const target = layout.nodes.find((box) => box.node.id === edge.to)!
+      assert.deepEqual(edge.points.at(-1), edge.direct
+        ? { x: Math.floor(layout.nodes[0].x + layout.nodes[0].width / 2), y: target.y - 1 }
+        : { x: target.x + target.width, y: target.y + Math.floor(target.height / 2) })
+      for (let i = 1; i < edge.points.length; i++) {
+        const a = edge.points[i - 1]; const b = edge.points[i]
+        assert.ok(a.x === b.x || a.y === b.y, "orthogonal path")
+        for (let y = Math.min(a.y, b.y); y <= Math.max(a.y, b.y); y++) for (let x = Math.min(a.x, b.x); x <= Math.max(a.x, b.x); x++) {
+          assert.ok(x >= 0 && x < layout.width && y >= 0 && y < layout.height)
+          assert.ok(layout.nodes.every((box) => x < box.x || x >= box.x + box.width || y < box.y || y >= box.y + box.height), "connector cannot cross a card")
+        }
+      }
+    }
+    const reversed = layoutDiagram({ ...graph, nodes: [...graph.nodes].reverse(), edges: graph.edges.filter((edge) => edge.from !== "d") })
+    assert.equal(reversed.nodes[0].node.id, "a", "flow order does not depend on input array order")
+    assert.equal(diagramTextWidth("👩‍💻e\u0301日本"), 7)
+    assert.deepEqual(wrapDiagramText("👩‍💻👩‍💻", 2), ["👩‍💻", "👩‍💻"])
+    assert.equal(diagramTextWidth("𠮷".repeat(10)), 20)
+    assert.deepEqual(wrapDiagramText("𠮷".repeat(10), 10), ["𠮷".repeat(5), "𠮷".repeat(5)])
+    const fork = layoutDiagram({ ...graph, edges: [
+      { from: "a", to: "b", label: "next" }, { from: "a", to: "c", label: "red" }, { from: "a", to: "d", label: "blue" },
+    ] })
+    const red = fork.edges[1]; const blue = fork.edges[2]
+    assert.equal(diagramWires(fork).split("\n")[blue.points[1].y][red.points[2].x], "╳", "diverged same-source edges cross without a false join")
     const maximum = {
       ...graph,
       nodes: Array.from({ length: 24 }, (_, index) => ({ ...isolated, id: `n${index}` })),
       edges: Array.from({ length: 48 }, (_, index) => ({ from: `n${index % 24}`, to: `n${(index + 1) % 24}`, label: `${index}:${"x".repeat(56)}` })),
     }
     const full = layoutDiagram(maximum)
-    assert.equal(full.length, 24)
-    assert.equal(full.flatMap((block) => block.outgoing).length, 48)
-    assert.ok(full.flatMap((block) => block.outgoing).every((edge) => edge.text.includes(edge.label)))
+    assert.equal(full.nodes.length, 24)
+    assert.equal(full.edges.length, 48)
+    assert.ok(full.edges.every((edge) => edge.labelLines.join("").replace(/^↺\s*/, "").includes(edge.label)))
+    assert.equal(diagramWires(full).split("\n").length, full.height)
   })
 
   test("monitor scopes events and initial snapshots; switches abort and reject obsolete responses", async (t) => {
@@ -697,7 +723,10 @@ if (!process.execArgv.includes("--conditions=browser")) {
       data: { on: (type: string, fn: (event: {}) => void) => { hostListeners.set(type, fn); return () => hostListeners.delete(type) },
         location: { default: () => transportLocation(selected() ?? alpha.id) }, session: { get: (id: string) => sessions.find((session) => session.id === id) } },
       keymap: { layer: (layer: () => KeymapLayer) => {
-        for (const command of layer().commands ?? []) if (command.id) commands.set(command.id, command)
+        for (const command of layer().commands ?? []) {
+          const key = command.id ?? (typeof command.bind === "string" ? command.bind : undefined)
+          if (key) commands.set(key, command)
+        }
       } },
       theme: { text: { default: "#eeeeee", subdued: "#aaaaaa", feedback: { warning: { default: "#ffff00" } } }, border: { default: "#888888" } },
       ui: {
@@ -724,10 +753,11 @@ if (!process.execArgv.includes("--conditions=browser")) {
     t.after(() => cleanup())
     const app = slots.find((slot) => slot.append === "app")!
     const panelSlot = slots.find((slot) => slot.append === "session.panel")!
+    const [panelWidth, setPanelWidth] = createSignal(80)
     const input: PanelInput = {
       get name() { return panel()?.name ?? "" },
       get sessionID() { return selected() ?? "" },
-      width: 80,
+      get width() { return panelWidth() },
       get presentation() { return fullscreen() ? "fullscreen" : "panel" },
       focused: true,
       focus: () => { focusCount++ },
@@ -769,20 +799,20 @@ if (!process.execArgv.includes("--conditions=browser")) {
     assert.deepEqual(opened, [alpha.id], "panel opens only by explicit request")
     assert.match(frame, /Drag divider to resize/)
     assert.match(frame, /\[Sidebar\]/)
-    assert.match(frame, /\[1\] → \[2\] left/)
-    assert.match(frame, /\[1\] → \[3\] right/)
-    assert.match(frame, /\[4\] → \[2\] feedback ↺/)
-    assert.match(frame, /\[4\] → \[4\] retry ↺/)
+    for (const label of ["left", "right", "feedback", "retry"]) assert.ok(frame.includes(label), `${label}\n${frame}`)
+    assert.match(frame, /▼/)
+    assert.match(frame, /◀/)
+    assert.doesNotMatch(frame, /\[\d+\]/)
     assert.doesNotMatch(frame, /transform · observed|Arrows reference|No additional detail/)
     assert.match(frame, /Features \*/)
-    const row = frame.split("\n").findIndex((line) => line.includes("[2] Features"))
-    await rendered.mockMouse.click(3, row)
+    const row = frame.split("\n").findIndex((line) => line.includes("Features"))
+    await rendered.mockMouse.click(frame.split("\n")[row].indexOf("Features") + 1, row)
     await flush()
     assert.match(rendered.captureCharFrame(), /Normalize raw inputs/)
     assert.match(rendered.captureCharFrame(), /Centers each input channel/)
     assert.doesNotMatch(rendered.captureCharFrame(), /features\.py|read ·|completed/)
     const sourceRow = rendered.captureCharFrame().split("\n").findIndex((line) => line.includes("[Sources]"))
-    await rendered.mockMouse.click(4, sourceRow)
+    await rendered.mockMouse.click(rendered.captureCharFrame().split("\n")[sourceRow].indexOf("[Sources]") + 2, sourceRow)
     await flush()
     assert.match(rendered.captureCharFrame(), /src\/features\.py/)
     assert.doesNotMatch(rendered.captureCharFrame(), /read ·|completed/)
@@ -1062,6 +1092,64 @@ if (!process.execArgv.includes("--conditions=browser")) {
     for (let tick = 0; tick < 160; tick++) await rendered.mockMouse.scroll(4, 25, "down")
     await flush()
     assert.match(rendered.captureCharFrame(), /Visible node 24/, "the final node is reachable by scrolling")
+    for (let index = 0; index < 24; index++) {
+      await run("j")
+      assert.match(rendered.captureCharFrame(), new RegExp(`Visible node ${index + 1}\\b`), "keyboard selection enters viewport")
+    }
+    for (let index = 22; index >= 0; index--) {
+      await run("k")
+      assert.match(rendered.captureCharFrame(), new RegExp(`Visible node ${index + 1}\\b`), "reverse keyboard selection enters viewport")
+    }
+    const unsorted = { ...otherGraph, nodes: [
+      { ...graph.nodes[1], detail: "Second selected", behavior: undefined },
+      { ...graph.nodes[0], detail: "First selected" },
+    ], edges: [{ from: "a", to: "b", label: "next" }] }
+    emit(nativeReady(beta.id, 3, unsorted))
+    await flush()
+    await run("j")
+    assert.match(rendered.captureCharFrame(), /First selected/)
+    await run("j")
+    assert.match(rendered.captureCharFrame(), /Second selected/)
+    await run("k")
+    assert.match(rendered.captureCharFrame(), /First selected/)
+    const dense = { ...unsorted, nodes: [
+      { ...graph.nodes[0], id: "aa", label: "𠮷".repeat(10) }, { ...graph.nodes[1], id: "bb" }, { ...graph.nodes[2], id: "cc" },
+    ], edges: [{ from: "aa", to: "bb", label: "next" }, { from: "bb", to: "cc", label: "next" },
+      ...Array.from({ length: 40 }, (_, index) => ({ from: "cc", to: "aa", label: `route ${index}` }))] }
+    emit(nativeReady(beta.id, 4, dense))
+    await flush()
+    const denseLayout = layoutDiagram(dense, { columns: 80 })
+    assert.ok(denseLayout.width > 80)
+    await run("j")
+    const selectedRow = rendered.captureCharFrame().split("\n").findIndex((line) => line.includes("𠮷"))
+    assert.ok(selectedRow >= 0)
+    assert.equal((rendered.captureCharFrame().match(/𠮷/gu) ?? []).length, 10, "native fixed-height rows preserve supplementary CJK")
+    const beforePan = rendered.captureCharFrame()
+    for (let tick = 0; tick < 60; tick++) await rendered.mockMouse.scroll(40, selectedRow, "right")
+    await flush()
+    const afterPan = rendered.captureCharFrame()
+    assert.notEqual(afterPan, beforePan)
+    assert.match(afterPan.split("\n").slice(5, 15).join("\n"), /┐/, "horizontal input reveals outside return-lane corner")
+    await run("k")
+    // Same-selection navigation changes scrolling after the frame, not Solid
+    // state; observe the next painted frame rather than the pre-scroll buffer.
+    const revealed = await rendered.waitForFrame((frame) => (frame.match(/𠮷/gu) ?? []).length === 10)
+    assert.equal((revealed.match(/𠮷/gu) ?? []).length, 10, "keyboard reveals horizontally panned card even when selection stays at first node")
+    assert.match(rendered.captureCharFrame(), /Raw inputs/)
+    await run("j")
+    rendered.resize(140, 50)
+    setPanelWidth(140)
+    await flush()
+    assert.equal((rendered.captureCharFrame().match(/𠮷/gu) ?? []).length, 10, "resize exposes entire graph and clamps horizontal offset")
+    const wideFrame = rendered.captureCharFrame()
+    const wideRow = wideFrame.split("\n").findIndex((line) => line.includes("𠮷"))
+    await rendered.mockMouse.click(wideFrame.split("\n")[wideRow].indexOf("𠮷") + 1, wideRow)
+    await flush()
+    assert.match(rendered.captureCharFrame(), /Raw inputs/, "resized cards remain interactive")
+    rendered.resize(80, 50)
+    setPanelWidth(80)
+    emit(nativeReady(beta.id, 5, large))
+    await flush()
     await clickTab("Granular")
     assert.equal(controls.at(-1)?.granularity, "granular")
     assert.equal(controls.at(-1)?.refresh, undefined)
