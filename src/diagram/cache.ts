@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { digest, type Evidence } from "./evidence.js"
 import { GranularitySchema, StateSchema, ViewAnalysisSchema, type DiagramState, type DiagramView } from "./schema.js"
+import { diagramEvidence } from "./notation.js"
 
 // Internal durable metadata, never part of the public snapshot/RPC schema.
 // Two accepted entries: one per depth. Failed attempts never replace them.
@@ -66,11 +67,11 @@ export function affectedViews(previous: AcceptedDiagram, evidence: readonly Evid
   const knownMutation = (id: string) => {
     const mutation = evidence.find((item) => item.id === id && item.mutation)
     return !!mutation?.file && evidence.some((item) => item.file === mutation.file && before[item.id]
-      && views.some((view) => view.graph.nodes.some((node) => node.evidence.includes(item.id))))
+      && views.some((view) => diagramEvidence(view.graph).includes(item.id)))
   }
   for (const item of evidence) if (item.file && mutatedFiles.has(item.file)) changed.add(item.id)
   if ([...changed].some((id) => (!before[id] && !knownMutation(id)) || !next[id] || evidence.find((item) => item.id === id)?.category === "request")) return views
   // A changed source not cited by any existing view can introduce structure.
-  if ([...changed].some((id) => !knownMutation(id) && !views.some((view) => view.graph.nodes.some((node) => node.evidence.includes(id))))) return views
-  return views.filter((view) => view.graph.nodes.some((node) => node.evidence.some((id) => changed.has(id))))
+  if ([...changed].some((id) => !knownMutation(id) && !views.some((view) => diagramEvidence(view.graph).includes(id)))) return views
+  return views.filter((view) => diagramEvidence(view.graph).some((id) => changed.has(id)))
 }

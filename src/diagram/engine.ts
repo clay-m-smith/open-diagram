@@ -4,6 +4,7 @@ import { analysisViews, initialState, StateSchema, type DiagramAnalysis, type Di
 import { validateDiagramOutput } from "./harness.js"
 import { affectedViews, evidenceKey, fingerprintKey, evidenceFingerprints, MemoSchema, type AcceptedDiagram, type DiagramMemo, type StoredDiagram } from "./cache.js"
 import type { DiagramUpdate } from "./schema.js"
+import { diagramEvidence, notationSignature } from "./notation.js"
 
 type Entry = {
   state: DiagramState
@@ -46,7 +47,7 @@ function changedNodes(before: DiagramGraph | null, after: DiagramGraph | null): 
     const node = graph?.nodes.find((node) => node.id === id)
     if (!node) return ""
     const { evidence: _evidence, ...description } = node
-    return JSON.stringify([description, graph!.edges.filter((edge) => edge.from === id || edge.to === id)])
+    return JSON.stringify([description, graph!.edges.filter((edge) => edge.from === id || edge.to === id), notationSignature(graph!, id)])
   }
   return after.nodes.filter((node) => signature(before, node.id) !== signature(after, node.id)).map((node) => node.id)
 }
@@ -476,8 +477,8 @@ export class DiagramEngine {
       const currentIDs = new Set(evidence.map((item) => item.id))
       const targeted = affected?.length && previous && affected.length < previous.analysis.views.length
         && previous.analysis.views.every((view) => affected.some((item) => item.id === view.id)
-          || view.graph.nodes.every((node) => node.evidence.every((id) => currentIDs.has(id)))) ? affected : undefined
-      const selectedIDs = new Set(targeted?.flatMap((view) => view.graph.nodes.flatMap((node) => node.evidence)))
+           || diagramEvidence(view.graph).every((id) => currentIDs.has(id))) ? affected : undefined
+      const selectedIDs = new Set(targeted?.flatMap((view) => diagramEvidence(view.graph)))
       const selectedFiles = new Set(evidence.filter((item) => selectedIDs.has(item.id) && item.file).map((item) => item.file))
       const input = targeted ? evidence.filter((item) => selectedIDs.has(item.id) || (item.file && selectedFiles.has(item.file)) || item.category === "request") : evidence
       const maxNodes = 48 - (previous?.analysis.views.filter((view) => !targeted?.some((item) => item.id === view.id)).reduce((sum, view) => sum + view.graph.nodes.length, 0) ?? 0)

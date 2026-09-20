@@ -1,9 +1,9 @@
 import { Rpc } from "@opencode/plugin/rpc"
 import { z } from "zod"
+import { diagramID as id, diagramText as text, NotationSchema, refineNotation } from "./notation-schema.js"
+export { NotationSchema, type DiagramNotation } from "./notation-schema.js"
 
 // No terminal controls, multiline labels, markup, or executable diagram syntax.
-const text = (max: number) => z.string().max(max).regex(/^[^\x00-\x1f\x7f-\x9f]*$/u)
-const id = z.string().min(1).max(40).regex(/^[a-zA-Z0-9_-]+$/)
 export const GraphSchema = z.object({
   title: text(100),
   summary: text(400),
@@ -17,6 +17,7 @@ export const GraphSchema = z.object({
     evidence: z.array(id).min(1).max(6),
   }).strict()).min(1).max(24),
   edges: z.array(z.object({ from: id, to: id, label: text(60) }).strict()).max(48),
+  notation: NotationSchema.nullable().optional(),
 }).strict().superRefine((graph, ctx) => {
   const ids = new Set(graph.nodes.map((node) => node.id))
   if (ids.size !== graph.nodes.length) ctx.addIssue({ code: "custom", message: "Duplicate node IDs" })
@@ -28,6 +29,7 @@ export const GraphSchema = z.object({
     }
     edges.add(key)
   }
+  refineNotation(graph, ctx)
 })
 export type DiagramGraph = z.infer<typeof GraphSchema>
 export const ViewSchema = z.object({ id, label: text(24).min(1), graph: GraphSchema }).strict()

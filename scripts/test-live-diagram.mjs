@@ -6,6 +6,8 @@ import { join, resolve } from "node:path"
 import { withV2Runtime, waitForPlugin } from "./v2-runtime.mjs"
 import { bindDiagramMonitor, createDiagramMonitor } from "../src/diagram/tui.tsx"
 import { DiagramRpc } from "../src/diagram/schema.ts"
+import { mapDiagramEvidence } from "../src/diagram/notation.ts"
+import { notationFixtures } from "../tests/fixtures/notations.ts"
 import { OpenCode } from "@opencode/client"
 import { Service } from "@opencode/client/service"
 
@@ -291,6 +293,16 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       await assert.rejects(rpc("publish", { sessionID: session.id, token: snapshot.token, analysis: external }), "token cannot overwrite another accepted publication")
       console.log("OK: public snapshot -> external views -> validated publish -> stale token rejected")
       assert.equal((await rpc("control", { sessionID: session.id, mode: "off" })).phase, "paused")
+      const hardwareSnapshot = await rpc("snapshot", { sessionID: session.id })
+      assert.ok(hardwareSnapshot.evidence.length)
+      const hardwareViews = ["circuit", "sequence", "timing", "architecture"].map((family) => ({
+        id: family, label: family, graph: mapDiagramEvidence(notationFixtures[family], () => [hardwareSnapshot.evidence[0].id]),
+      }))
+      const hardware = await rpc("publish", { sessionID: session.id, token: hardwareSnapshot.token,
+        analysis: { relevant: true, reason: "Synthetic hardware representation fixture", views: hardwareViews } })
+      assert.deepEqual(hardware.views, hardwareViews, "actual native RPC validates and exposes notation payloads")
+      assert.deepEqual((await rpc("get", { sessionID: session.id })).views, hardwareViews)
+      assert.equal(diagramRequests, authorCalls, "manual notation publication is zero-call")
       const beforeReload = await rpc("get", { sessionID: session.id })
       const configPath = join(project, "opencode.json")
       const nextConfig = JSON.parse(await readFile(configPath, "utf8"))
@@ -311,6 +323,7 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       assert.equal(restored.stale, true)
       assert.deepEqual(restored.graph, beforeReload.graph, "native plugin storage restores exact graph")
       assert.deepEqual(restored.views, beforeReload.views, "all view tabs persist")
+      assert.deepEqual(restored.views, hardwareViews, "specialized views survive native plugin storage/reload")
       assert.deepEqual(restored.sources, beforeReload.sources)
       assert.equal(restored.updatedAt, beforeReload.updatedAt)
       // Native plugin.updated flows through the very same public-event binding

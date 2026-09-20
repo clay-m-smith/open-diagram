@@ -8,6 +8,8 @@ import { saveDiagramFile, copyDiagramImage } from "../src/diagram/export-platfor
 import type { DiagramGraph } from "../src/diagram/schema.js"
 import { layoutDiagram } from "../src/diagram/layout.js"
 import { diagramArrowColor } from "../src/diagram/arrow-colors.js"
+import { notationFixtures } from "./fixtures/notations.js"
+import { sceneMarkerSVG } from "../src/diagram/scene-export.js"
 
 const graph: DiagramGraph = { title: "Model <SVG> & image", summary: "Not displayed",
   nodes: [
@@ -58,6 +60,45 @@ test("PNG rasterizes full tall SVG with bounded nonempty dimensions", async () =
   assert.equal(width, 960); assert.ok(height > 1500); assert.ok(width * height <= 16_000_000)
   assert.ok(png.byteLength > 5000)
   assert.match(svg, new RegExp(`height="${height}"`))
+})
+
+test("specialized SVG and PNG expose shared notation geometry without citations", async () => {
+  for (const [family, graph] of Object.entries(notationFixtures)) {
+    const svg = await renderDiagramSVG(graph)
+    assert.match(svg, new RegExp(`data-notation="${family}"`))
+    assert.doesNotMatch(svg, /e_design|e_wiring/)
+    if (family === "circuit") {
+      assert.match(svg, /data-net="net:sda_net"/)
+      assert.match(svg, /unassigned/)
+      assert.doesNotMatch(svg, /marker-end=/, "electrical nets are not directed graph edges")
+    }
+    if (family === "sequence") {
+      assert.match(svg, /data-owner="message:/)
+      assert.doesNotMatch(svg, /orient="auto-start-reverse"/, "resvg 2.6.2 leaves these markers unrotated")
+    }
+    if (family === "timing") assert.match(svg, /not to scale/)
+    const png = Buffer.from(await renderDiagramPNG(graph))
+    assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+    assert.ok(png.readUInt32BE(16) * png.readUInt32BE(20) <= 16_000_000)
+  }
+})
+
+test("PNG marker orientation points toward the endpoint for replies and source arrows", async () => {
+  const { Resvg } = await import("@resvg/resvg-js")
+  // A leftward reply and a start arrow on a rightward path both point left.
+  // Count tip/wing pixels, not a font- or antialias-sensitive full-image golden.
+  for (const start of [false, true]) {
+    const marker = sceneMarkerSVG("arrow", "arrow", "#000000", "#ffffff", start)
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="60"><rect width="100" height="60" fill="white"/><defs>${marker}</defs><path d="${start ? "M30,30 L90,30" : "M90,30 L30,30"}" stroke="black" stroke-width="2" marker-${start ? "start" : "end"}="url(#arrow)"/></svg>`
+    const image = new Resvg(svg).render()
+    const pixels = image.pixels
+    const ink = (left: number, right: number) => {
+      let count = 0
+      for (let y = 20; y <= 40; y++) for (let x = left; x <= right; x++) if (pixels[(y * 100 + x) * 4] < 128) count++
+      return count
+    }
+    assert.ok(ink(37, 43) > ink(27, 33), "left-pointing tip is narrower than right-side wings")
+  }
 })
 
 test("ELK exports separate ports and preserves orthogonal border joins", async () => {

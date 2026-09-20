@@ -3,7 +3,13 @@
   "name": "open-diagram",
   "version": "0.1.0",
   "private": true,
-  "description": "Standalone live diagram plugin for OpenCode V2.",
+  "description": "Native software, hardware, and firmware diagrams for OpenCode V2.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/clay-m-smith/open-diagram.git"
+  },
+  "homepage": "https://github.com/clay-m-smith/open-diagram#readme",
+  "bugs": "https://github.com/clay-m-smith/open-diagram/issues",
   "type": "module",
   "exports": {
     ".": "./server.ts",
@@ -21,7 +27,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "verify": "npm run typecheck && npm test"
+    "verify": "npm run typecheck && npm test",
+    "docs:images": "node --import tsx scripts/render-readme.mjs",
+    "docs:check": "node --import tsx scripts/render-readme.mjs --check"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.7",
@@ -43,6 +51,6 @@
   },
   "engines": {
     "node": ">=22",
-    "opencode": ">=2.0.7 <2.1.0"
+    "opencode": ">=2.0.7 <3"
   }
 }

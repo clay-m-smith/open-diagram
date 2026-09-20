@@ -539,7 +539,8 @@ function DiagramContent(props: { ctx: Plugin.Context; state?: DiagramState; prob
   return <box width="100%" flexDirection="column" flexShrink={0}>
     <Show when={error()}><text fg={colors().accent}>{error()}</text></Show>
     <Show when={view()} fallback={<text fg={colors().subdued}>{props.state?.reason ?? "Waiting…"}</text>}>
-      <text fg={colors().subdued}>{`${view()!.graph.title}${props.state?.stale ? " · stale" : ""}`}</text>
+      <text fg={colors().subdued}>{`${view()!.graph.title}${view()!.graph.notation ? ` · ${view()!.graph.notation!.family}` : ""}${props.state?.stale ? " · stale" : ""}`}</text>
+      <Show when={view()!.graph.notation && view()!.graph.summary}><text fg={colors().subdued}>{view()!.graph.summary}</text></Show>
       <CompactDiagram graph={view()!.graph} changed={props.state?.changedViews[view()!.id] ?? props.state?.changed ?? []}
         sources={props.state?.sources ?? []} selected={props.selected} onSelect={props.select}
         colors={colors()} onLayout={(nodes) => props.onLayout?.(view()!.graph, nodes)} />

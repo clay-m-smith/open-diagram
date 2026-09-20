@@ -2,9 +2,12 @@ import { z } from "zod"
 import { AnalysisSchema, ViewAnalysisSchema, type DiagramViewAnalysis, type DiagramGraph, type DiagramGranularity } from "./schema.js"
 import type { Evidence } from "./evidence.js"
 import { DIAGRAM_INSTRUCTION, GRANULAR_INSTRUCTION } from "./prompt.js"
+import { diagramEvidence } from "./notation.js"
 
 export { DIAGRAM_INSTRUCTION } from "./prompt.js"
-export { GraphSchema, ViewSchema, ViewAnalysisSchema, DiagramRpc } from "./schema.js"
+export { GraphSchema, ViewSchema, ViewAnalysisSchema, NotationSchema, DiagramRpc } from "./schema.js"
+export { diagramEvidence, nodeEvidence } from "./notation.js"
+export type { DiagramGraph, DiagramNotation } from "./schema.js"
 export const HARNESS_VERSION = 1
 
 export function diagramOutputSchema(options: { strict?: boolean } = {}) {
@@ -51,7 +54,7 @@ export function validateDiagramOutput(value: unknown, evidence: readonly Evidenc
   }
   const ids = new Set(evidence.map((item) => item.id))
   const graphs = analysis.views.map((view) => view.graph)
-  if (graphs.some((graph) => graph.nodes.some((node) => node.evidence.some((id) => !ids.has(id))))) {
+  if (graphs.some((graph) => diagramEvidence(graph).some((id) => !ids.has(id)))) {
     throw new DiagramOutputError("citation", "Diagram cited evidence outside current snapshot")
   }
   return analysis

@@ -3,6 +3,9 @@
 Open Diagram separates evidence collection, diagram authorship, validation, and
 presentation. No provider-specific routing is required by the graph protocol.
 
+For numbered install and model-selection instructions, start with
+[setup](setup.md). For Git/npm release procedures, see [publishing](publishing.md).
+
 ## Three integration paths
 
 1. **OpenAI-compatible endpoint:** configure `backend: "openai-compatible"`,
@@ -118,9 +121,10 @@ during an active attempt coalesces with that attempt, even if collection finishe
 after it fails. A new Refresh after failure explicitly retries.
 
 For strict Structured Outputs, use `diagramOutputSchema({strict: true})`: every
-property is required, including `behavior` (use an empty string when unsupported).
+property is required, including `behavior` (use an empty string when unsupported)
+and `notation` (use `null` for generic blocks).
 The endpoint adapter selects this automatically. Public validation remains
-backward-compatible with omitted `behavior`.
+backward-compatible with omitted `behavior` and `notation`.
 
 Output has this shape:
 
@@ -149,9 +153,56 @@ internals, system boundaries, repository containment, workflows, protocols, and
 other useful structures can coexist as tabs. Node `kind` is descriptive text,
 not an ML-only enumeration. Diagrams distinguish observed from planned facts.
 
-Every node cites current snapshot evidence. Limits and complete field constraints
+Every node and every notation record with an `evidence` field cites current
+snapshot evidence. Limits and complete field constraints
 are available from `diagramOutputSchema()`. Unknown citations, duplicate IDs,
 dangling edges, terminal controls, and oversized output are rejected.
+
+### Versioned notation
+
+The snapshot transport remains version 1. Its graph schema accepts an additive
+`notation` payload with its own `version: 2` and a `family` discriminator. Legacy
+graphs omit this field or set it to `null`; their node/edge representation is
+unchanged. `NotationSchema`, `DiagramNotation`, `DiagramGraph`, `diagramEvidence`
+and `nodeEvidence` are also exported through `open-diagram/harness`.
+
+Architecture, flowchart, state, class and ER views retain graph nodes/edges and
+annotate them with typed records. Edge annotations use zero-based edge indices
+and must cover every edge exactly once. Flow/state and class/ER node records must
+cover every node. Architecture ports reference their owning node; a link cannot
+name another node's port. Groups have unique IDs, acyclic parents and direct node
+membership (one owning group per node).
+
+Sequence, timing and circuit views use nodes as selectable participants, signals
+or components, but **require `edges: []`**. Their relationships live in the family
+payload:
+
+- Sequence: `participants`, ordered `messages`, inclusive message-index
+  `activations` and `fragments`. Repeated messages need distinct IDs. Interaction
+  spans may nest but not partially overlap. Fragments label a span; they do not
+  encode separate UML alternative operands.
+- Timing: `unit`, positive `end`, and `signals` with `mode`, `initial`, ordered
+  `{at, value}` samples and evidence. Times must increase strictly within `(0,end)`.
+  Digital values are `0`, `1`, `X` or `Z`; bus values are plain text. Event-spaced
+  layout shows exact times without claiming proportional time spacing.
+- Circuit: `groups`, `components` and `nets`. Components have `node`, `reference`,
+  `value`, `symbol`, `pins` and evidence. Each pin has a component-local `id`,
+  `number`, `label`, `electrical` role and `noConnect`. Nets have unique IDs,
+  display labels, nullable sheet/group `scope`, explicit `{node,pin}` terminals
+  and evidence. A pin cannot belong to two nets or be both connected and NC.
+  Non-NC pins without a net are rendered as unassigned, not silently grounded.
+  Local-net terminals must belong to their scope or a descendant sheet. A global
+  net can span sheets; an explicit cross-sheet net uses their common ancestor or
+  global scope. Net IDs, not equal labels or geometric intersections, establish
+  identity. Junction dots are derived only from declared terminal membership.
+
+Use the generated schema for exact enums and bounds rather than extending
+descriptive node `kind`. Circuit symbol tokens are deliberately compact; generic
+symbols remain labelled unknown. There is no KiCad import adapter, electrical
+rule checker, simulator or PCB output. All family citations are validated and
+alias-remapped; previous-output hints strip all citation arrays. Durable caches,
+dependency targeting, changed-node highlighting, TUI Sources and exports consume
+the same accepted family data.
 
 The snapshot includes an optimistic concurrency token. Publish returns a conflict
 when material diagram input, tracking mode, or an accepted diagram changed after the snapshot;

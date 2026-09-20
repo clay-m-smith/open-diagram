@@ -5,6 +5,7 @@ import { parseColor, type BoxRenderable, type ColorInput, type ScrollBoxRenderab
 import { diagramTextWidth, diagramWireRuns, layoutDiagram, type DiagramLayout, type DiagramLayoutOptions } from "./layout.js"
 import { diagramArrowColor } from "./arrow-colors.js"
 import type { DiagramGraph } from "./schema.js"
+import { nodeEvidence } from "./notation.js"
 
 /** Present source identities, not the operations used to collect them. */
 export function sourceCaption(label: string): string {
@@ -84,7 +85,7 @@ export function CompactDiagram(props: {
   createEffect(() => {
     pending = { graph: props.graph, options: { columns: columns(), selected: props.selected, changed: props.changed,
       sourceControl: true, sources: sourcesFor() === props.selected && props.selected
-        ? props.graph.nodes.find((node) => node.id === props.selected)?.evidence.map((id) => sourceCaption(sources().get(id) ?? id)) : undefined } }
+        ? nodeEvidence(props.graph, props.selected).map((id) => sourceCaption(sources().get(id) ?? id)) : undefined } }
     setProblem(undefined); setWorking(true); void solve()
   })
   const selectionContent = createMemo(() => JSON.stringify([props.graph, props.selected]))
@@ -105,9 +106,16 @@ export function CompactDiagram(props: {
         maxWidth: Math.max(columns(), layout().width), height: layout().height, minHeight: layout().height, maxHeight: layout().height }}>
     <box width={Math.max(columns(), layout().width)} height={layout().height} flexShrink={0} flexDirection="column">
     <box position="absolute" top={0} left={Math.max(0, Math.floor((columns() - layout().width) / 2))} width={layout().width} height={layout().height} flexDirection="column">
+      <For each={layout().scene?.regions ?? []}>{(region) => <box position="absolute" left={region.x} top={region.y}
+        width={region.width} height={region.height} border borderStyle="single" borderColor={props.colors.border}
+        title={region.label} titleColor={props.colors.subdued} />}</For>
       <text position="absolute" left={0} top={0} width={layout().width} height={layout().height} selectable={false}>
         <For each={wires()}>{(run) => <span style={{ fg: run.tone === undefined ? props.colors.subdued : diagramArrowColor(run.tone, dark()) }}>{run.text}</span>}</For>
       </text>
+      <For each={layout().scene?.texts ?? []}>{(label) => <text position="absolute" left={label.x} top={label.y}
+        width={Math.max(1, diagramTextWidth(label.text))} height={1}
+        fg={label.tone === undefined ? props.colors.subdued : diagramArrowColor(label.tone, dark())}
+        onMouseUp={(event) => { if (event.button === 0 && label.node) { event.stopPropagation(); props.onSelect(label.node) } }}>{label.text}</text>}</For>
       <For each={layout().edges}>{(edge) => <text position="absolute" left={edge.labelX} top={edge.labelY}
         width={Math.max(1, ...edge.labelLines.map(diagramTextWidth))} height={edge.labelLines.length}
         fg={diagramArrowColor(edge.tone, dark())} onMouseUp={(event) => {

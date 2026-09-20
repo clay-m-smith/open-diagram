@@ -97,7 +97,7 @@ export function mergeEvidence(parent: Evidence[], children: Evidence[]): Evidenc
 function category(name: string, path: string, output: string): EvidenceCandidate["category"] {
   if (/(?:^|\/)(?:runs?|logs?|artifacts?|node_modules|\.git)\//i.test(path)) return "recent"
   if (["edit", "patch", "write"].includes(name)) return "source"
-  if (/\.(?:py|[cm]?[jt]sx?|rs|go|java|kt|scala|c|cc|cpp|h|cs|rb|php|swift|sh|sql|tf|proto|graphql|ya?ml|toml)$/i.test(path)
+  if (/\.(?:py|[cm]?[jt]sx?|rs|go|java|kt|scala|c|cc|cpp|h|hpp|cs|rb|php|swift|sh|sql|tf|proto|graphql|ya?ml|toml|v|sv|vh|svh|vhd|vhdl|dts|dtsi|ld|sdc|xdc|ioc|kicad_sch|kicad_sym|kicad_pcb|net)$/i.test(path)
     || /(?:package|tsconfig|config|schema)[^/]*\.json$/i.test(path)) return "source"
   if (name === "glob" || /^Read directory\b/.test(output)) return "inventory"
   if (/architect|design|workflow|diagram|protocol|schema|pipeline|overview|outline/i.test(path)

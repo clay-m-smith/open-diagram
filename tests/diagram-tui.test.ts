@@ -15,6 +15,7 @@ import { createStore, produce } from "solid-js/store"
 
 import { diagramTextWidth, diagramWireRuns, diagramWires, layoutDiagram, wrapDiagramText } from "../src/diagram/layout.js"
 import { ARROW_COLORS, diagramArrowColor } from "../src/diagram/arrow-colors.js"
+import { notationFixtures } from "./fixtures/notations.js"
 import { type DiagramGraph, type DiagramState, initialState } from "../src/diagram/schema.js"
 import {
   createDiagramMonitor, DIAGRAM_CACHE_LIMIT, DIAGRAM_TIMEOUT_MS, diagramStatus, diagramColors,
@@ -1310,6 +1311,23 @@ if (!process.execArgv.includes("--conditions=browser")) {
     await rendered.mockMouse.click(wideFrame.split("\n")[wideRow].indexOf("𠮷") + 1, wideRow)
     await flush()
     assert.doesNotMatch(rendered.captureCharFrame(), /Raw inputs/, "resized cards remain interactive: clicking selection collapses details")
+    const beforeNotations = { reads: readCount, controls: controls.length }
+    setPanelWidth(200)
+    rendered.resize(200, 85)
+    for (const [family, fixture] of Object.entries(notationFixtures)) {
+      emit(nativeReady(beta.id, 4, fixture))
+      await flush()
+      const frame = rendered.captureCharFrame()
+      assert.match(frame, new RegExp(fixture.title), family)
+      assert.doesNotMatch(frame, /layout unavailable|Arranging diagram/, family)
+      for (const node of fixture.nodes) assert.ok(frame.includes(node.label), `${family}: ${node.label}`)
+      if (family === "circuit") { assert.match(frame, /NC/); assert.match(frame, /unassigned/); assert.match(frame, /●/); assert.match(frame, /Controller board/); }
+      if (family === "sequence") { assert.match(frame, /loop/); assert.match(frame, /poll/); }
+      if (family === "timing") assert.match(frame, /not to scale/)
+      await run("j")
+      assert.match(rendered.captureCharFrame(), /\[Sources\]/)
+    }
+    assert.deepEqual({ reads: readCount, controls: controls.length }, beforeNotations, "notation navigation and resizing remain cache-only")
     rendered.resize(80, 50)
     setPanelWidth(80)
     emit(nativeReady(beta.id, 5, large))

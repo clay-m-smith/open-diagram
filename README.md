@@ -1,181 +1,212 @@
 # Open Diagram
 
-Live block diagrams for OpenCode V2 (>=2.0.7 <2.1.0). Infer useful structures from ongoing
-development: model internals, systems, repositories, workflows, protocols, and
-more. Mixed projects get separate view tabs instead of one flattened diagram.
+**Keep the architecture in view while you build.**
 
-The default surface is OpenCode's compact native sidebar. Select **Classic sidebar** to
-restore its original contents. Blocks show labels and directed links; select a
-block for its description and functional explanation. **Sources** reveals compact
-file references separately, without tool-call logs. Cards fit their contents instead
-of stretching across the panel. ELK.js lays out cards and orthogonal connectors
-with a top-to-bottom bias, minimizing crossings while allowing branches and
-return paths on either side. Wider panels can place parallel branches side by
-side; width is a preference, not a clipping constraint. Disconnected cards get
-no implied arrow. `*` marks changes;
-`~` marks planned blocks; `↺` marks return paths.
-Connections use matching line, label, and arrowhead hues, with brighter tones on
-dark terminals/exports and darker tones in light mode. Colors stay
-consistent while resizing or expanding cards. Eight hues are reused for dense
-graphs, preferring different colors for overlapping flow ranges. At terminal
-crossings, vertical lines pass over horizontal ones without extra overlap markers.
-Shared trunks and merged arrowheads stay neutral in terminals and exports rather than implying
-that they belong to only one connection.
-Dense graphs can scroll horizontally rather than hiding connections. The host
-retains vertical scrolling, sidebar visibility, and resizing.
-Top controls use aligned **View**, **Depth**, **Tools**, and **Export** groups.
-Active selectors are bold and underlined; controls wrap within their group on
-narrow panels. Long captions shorten with an ellipsis without splitting Unicode
-characters or brackets, and expand again when space permits. Sidebar and expanded
-panels share the same labels and styling.
-Keyboard navigation follows diagram layers from top to bottom, then left to
-right within each layer. Layout runs locally in an isolated worker, with a bounded
-cache and coalesced resize/selection updates; it never calls a model. Obsolete
-results cannot replace a newer graph. Terminal and exports use the same solver.
-Server snapshots preserve every view and tracking mode across reloads.
-Viewing is cache-only: there is no periodic polling or evidence collection on
-view/session-tab changes. The TUI keeps the last 64 visited sessions in memory,
-updates them from server events, and reconciles snapshots after reconnect or
-plugin reload. **Refresh** recollects evidence, reuses matching accepted output,
-and retries a failed changed-input update; it does not rebuild a working diagram
-when nothing meaningful changed. Paused sessions refresh evidence without inference.
-Accepted Overview and Granular diagrams have separate durable content-keyed caches.
-Depth switches reuse matching output, including after reload. Development hooks
-coalesce meaningful source changes; chat, timestamps, message ordering, progress
-prose and shell logs do not invalidate a source-backed diagram. Request-only
-sessions still track requests. Known changed
-dependencies update only affected views with a smaller evidence packet; new or
-removed dependencies conservatively request broader analysis. Unaffected views
-remain byte-for-byte unchanged. An update failure leaves the last-good diagram
-visible with a separate warning, without automatic same-input retries. Empty
-context is not treated as deletion. A never-generated session stays empty until
-development activity, a main-agent publication, or Refresh.
+Open Diagram turns development context into native, interactive diagrams inside
+OpenCode V2. Follow a software pipeline, inspect a firmware state machine, trace a
+hardware interface, or map a circuit's pins and nets—without leaving the terminal.
 
-Choose **Depth → Granular** (or `/open-diagram granular`) for layer/operation-level
-views with observed parameters, tensor dimensions, and internal branches. Use
-**Overview** (or `/open-diagram overview`) to return to architectural blocks.
-Depth is saved per session and changing it never resumes paused tracking.
-Granular diagrams can only show internals present in session evidence: ask your
-agent to inspect the actual model, algorithm, and configuration files when needed.
+It sits in the sidebar, expands when you need room, and exports clean PNG or SVG
+images when the explanation needs to travel.
 
-## Load locally
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
+  <img src="docs/images/architecture-light.png" alt="Open Diagram's own data flow: public session evidence enters the diagram engine, which coordinates the configured model, durable storage, native TUI, and image exports." width="760">
+</picture>
 
-Requires Node >=22 and OpenCode >=2.0.7 <2.1.0. Install dependencies with
-`npm install`, then add this repository's absolute path to `plugins` in the target
-project's `opencode.json`:
+*Open Diagram, drawn by Open Diagram. This source-linked view of the repository
+uses the same renderer as the plugin's exports. [SVG](docs/images/architecture-light.svg)
+· [How these images are generated](docs/images/README.md)*
+
+## Why use it?
+
+- **Context stays visible.** Separate views for distinct structures; select a
+  block for its description, behavior, and source references.
+- **Software and hardware belong together.** Architecture, flowcharts, state
+  machines, classes, ER models, sequences, timing, and circuits have typed semantics.
+- **You choose the author.** Use your active agent, a dedicated OpenCode model,
+  or an OpenAI-compatible endpoint. No implicit paid fallback.
+- **Viewing is local.** Switching views, resizing, selecting, and exporting never
+  call a model. Accepted diagrams and tracking preferences survive reloads.
+- **It feels like OpenCode.** Native sidebar, keyboard navigation, resizable
+  panel, fullscreen, host-theme colors, and one-click Classic sidebar restoration.
+
+## Install and set up
+
+Requires **Node.js 22+** and **OpenCode 2.x (`>=2.0.7 <3`)**.
+Current verification used **OpenCode 2.0.11**. The range admits later 2.x releases;
+it does not claim every future release has already been tested.
+The supported installation today is a local checkout; this repository is still
+marked `private` for npm publication.
+
+### 1. Get the plugin
+
+```sh
+git clone https://github.com/clay-m-smith/open-diagram.git
+cd open-diagram
+npm ci
+pwd
+```
+
+Keep the absolute path printed by `pwd`. On Windows, use an absolute path with
+forward slashes in JSON, such as `C:/projects/open-diagram`.
+
+### 2. Load it in your project
+
+Add this entry to the **target project's** `opencode.json` or `opencode.jsonc`.
+Merge it into existing `plugins`; do not replace your other settings.
 
 ```json
 {
   "plugins": [{
     "package": "/absolute/path/to/open-diagram",
-    "options": {
-      "backend": "opencode",
-      "providerID": "openai",
-      "model": "gpt-5.6-luna"
-    }
+    "options": { "backend": "manual" }
   }]
 }
 ```
 
-The package exports its server at `.` and TUI at `./tui`. OpenCode loads the TUI
-entry alongside the server. This example explicitly selects a separately billed
-diagram model; use a model available through your OpenCode provider. It never
-changes the chat model, agent, or worker routing. Installing the bare package
-without backend options defaults to **manual** generation, with no paid fallback.
+Open OpenCode in that target project. For an already running instance, reload
+configuration with `opencode reload` from the target project and reopen the TUI
+if its plugin entry has not appeared. `/open-diagram` opens the diagram view.
 
-## Controls
+### 3. Choose the model that draws your diagrams
 
-- `/open-diagram` — select diagram tabs; native sidebar visibility remains a host preference.
-- `/open-diagram panel` — open the resizable panel; drag its divider to resize.
-- `/open-diagram fullscreen` — fullscreen graph, with the same view tabs.
-- `/open-diagram sidebar` or `close` — return to native sidebar contents.
-- `/open-diagram auto|on|off|refresh|pause|resume` — tracking controls.
-- `/open-diagram export-theme` — choose System, Dark, or Light for image exports.
-- In a focused panel: `j/k` select blocks, `f` fullscreen, `p` pause/resume,
-  `r` refresh, `Escape` return to the classic OpenCode sidebar.
+| Mode | Who authors the diagram? | What to configure |
+| --- | --- | --- |
+| **Manual** (default) | Your active agent or an external author, via snapshot/publish tools | `backend: "manual"` |
+| **OpenCode model** | A dedicated model available in your target project's OpenCode catalog | `backend: "opencode"`, `providerID`, `model`; optional `variant` |
+| **Compatible endpoint** | A model served by a local or explicitly allowed remote API | `backend: "openai-compatible"`, `baseURL`, `model` |
 
-Narrow terminals use the host's sidebar overlay; child sessions have no native
-sidebar, so `/open-diagram` opens the panel there. No private host layout state is
-modified. The panel's short resize hint appears only outside fullscreen.
-Diagram colors use the host theme, supporting both the original 2.0.7 tokens
-and the newer `base`/`muted` RGBA tokens without changing user theme settings.
-
-### Copy and save
-
-The **[PNG] [SVG] [Save]** row exports the full active cached diagram, not a
-terminal screenshot. It includes node labels, directed links, and the selected
-block's displayed details; it excludes controls, tabs, status, and Sources UI.
-Stale but valid cached diagrams remain exportable. Export never calls a model.
-Terminal and image exports share the same content-sized card and connector layout.
-Exports default to **System**, following OpenCode's resolved light/dark mode at
-click time (including its system/terminal preference). Use **[Theme: System]**
-beside the export buttons to choose **Dark** or **Light** explicitly. This saved
-diagram-only preference applies to PNG, SVG, and Save across sessions and reloads;
-it never changes the host theme. Backgrounds, cards, text, and arrow hues all adapt.
-Saved images keep the chosen mode even when viewed in another application.
-
-- **SVG** copies a vector image using `image/svg+xml`, not plain-text markup.
-  Paste into an SVG-capable application; PNG is more widely supported.
-- **PNG** copies a raster image using `image/png`. Both copy actions work on
-  Linux with an existing `wl-copy` (local Wayland) or
-  `xclip` (X11, including an SSH-forwarded `DISPLAY`). SSH alone is not a blocker;
-  the TUI process must inherit a working display and have `xclip` on PATH. Local
-  terminal click-drag text selection does not establish image clipboard access.
-  X11 copy checks that the requested image format is offered on that display;
-  it does not read clipboard contents or prove that a destination app pasted it.
-  Missing helpers, failed display connections, and missing image formats offer
-  an actionable Save fallback. After reconnecting SSH, launch the TUI from the
-  new connection so it inherits the new `DISPLAY`.
-  Unsupported environments offer a save dialog, never raw markup disguised as
-  an image copy. No utility is installed automatically.
-- **Save** chooses PNG or SVG and a filename on the computer running the TUI.
-  Existing files and symlinks are never overwritten; choose another filename.
-
-PNG rendering loads `@resvg/resvg-js` only on demand and uses available system
-fonts. SVG remains editable/scalable; font availability can affect glyph rendering.
-
-## Models and tools
-
-Any model can author diagrams using `open_diagram_snapshot` followed by
-`open_diagram_publish`. The tools bind to the invoking session, validate current
-citations, reject stale snapshots, and persist accepted views. They do not edit
-source files or execute generated output. Tool permissions use those same names.
-
-See [the public harness](docs/harness.md) for prompt/schema exports, authenticated
-RPC, backend configuration, and evidence boundaries. For a local service:
+For automatic diagrams, connect the provider in OpenCode using `/connect`, then
+inspect the available catalog with `opencode models` from the target project.
+Use real IDs from that catalog—not a guessed model name. Replace the manual
+entry's options with:
 
 ```json
-{"backend":"openai-compatible","baseURL":"http://127.0.0.1:8082/v1","model":"bonsai2-27b","enableThinking":false,"cachePrompt":false}
+{
+  "backend": "opencode",
+  "providerID": "YOUR_PROVIDER_ID",
+  "model": "YOUR_MODEL_ID"
+}
 ```
 
-Endpoint mode uses JSON Schema by default; set `responseFormat: "json-object"`
-for endpoints without schema support. Remote endpoints require `allowRemote:
-true`; API keys come from the environment variable named by `apiKeyEnv`.
-OpenCode-backed generation uses its configured provider credentials and trust
-boundary. Both automatic modes send bounded public session excerpts to the
-selected model. Avoid reading secrets into sessions used for automatic diagrams.
+**These are plugin options, not OpenCode's top-level `model` setting.** They select
+only the diagram author; your chat, agent, and worker routing stay unchanged.
+Credentials come from OpenCode. Automatic generation can incur provider charges.
+The model must reliably produce structured JSON and understand the domain you
+are diagramming; no particular provider or model is required.
 
-Source reads and current requests reserve evidence space ahead of later logs.
-Selection is bounded, not exhaustive repository analysis. Diagrams are model
-interpretations, not proof of correctness. Failed updates retain the last graph
-with visible stale/error status; automatic retries require changed evidence or
-Refresh. Source excerpts are transient, while graph text and citation labels are
-stored in this plugin's location-scoped storage. The standalone namespace does not
-read or migrate the original proof-of-concept plugin's private storage.
-Collection outages mark retained graphs stale until a successful context read.
-Unreadable persistence blocks initialization rather than replacing a saved pause
-or graph with writable defaults; the next access retries hydration.
+See the **[numbered setup and model-selection guide](docs/setup.md)** for exact ID
+splitting, variants, local/remote endpoints, credentials, switching models, cost
+controls, and troubleshooting.
 
-## Development
+### 4. Create your first diagram
 
-- `npm run typecheck` — TypeScript checks.
-- `npm test` — core, server, TUI monitor, and isolated runtime tests.
-- `npm run verify` — typecheck and tests.
+Have the agent inspect the relevant source files or discuss the design. With an
+automatic backend, meaningful development activity can schedule an update; use
+**Refresh** to recollect evidence explicitly. Unchanged input reuses accepted output.
 
-Runtime tests require `opencode` and `python3` on PATH and use a private service
-with fixture model responses. The native OpenTUI renderer test requires Node
->=26.4 with `--experimental-ffi`; it skips on older Node versions.
+In manual mode, ask your agent:
 
-`npm pack --dry-run` checks package contents. The package exposes `./harness` and
-`./rpc` alongside native plugin entrypoints. Tests use isolated fixture services;
-they never call real paid models or alter the shared service.
+> Inspect the relevant source files. Call `open_diagram_snapshot`, follow its
+> instruction and output schema, then call `open_diagram_publish` with a grounded
+> diagram of this project. Use separate views where useful.
+
+Manual means **no secondary diagram-model call**, not free primary-agent usage.
+The exact [diagram publication procedure](docs/setup.md#publish-a-diagram) works
+with any capable model. Refresh alone does not author diagrams in manual mode.
+
+## Pick the notation that fits
+
+| Family | What it preserves |
+| --- | --- |
+| Architecture | Nested groups, named ports, typed links, directional or bidirectional interfaces; useful for software, embedded systems, and HIL rigs |
+| Flowchart | Decisions, conditions, start/end roles, fork/join structure |
+| State | Initial/final states, composite groups, events, guards, actions |
+| Class / ER | Typed members, visibility, primary/foreign keys, relationship kinds and cardinalities |
+| Sequence | Ordered lifelines and messages, replies, self-calls, activations, labelled interaction spans |
+| Timing | Digital `0/1/X/Z` and bus values with exact transition times; event-spaced, explicitly **not to scale** |
+| Circuit | Component references and values, numbered pins, scoped multi-terminal nets, NC/unassigned pins, explicit junctions |
+
+Existing block graphs remain supported. Specialized families add validated
+structure rather than relying on descriptive labels to imply meaning. These are
+compact native notations, not exhaustive UML/IEC drawings or a CAD editor.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/cached-view-dark.png">
+  <img src="docs/images/cached-view-light.png" alt="Sequence diagram of a cold TUI cache reopening an accepted diagram through scoped server RPC and a warm DiagramEngine cache, without evidence collection or model inference." width="900">
+</picture>
+
+*A second view of this repository: reopening a cached diagram. The same accepted
+data feeds the terminal and exports. [SVG](docs/images/cached-view-light.svg)*
+
+## Work the way you want
+
+| Action | Control |
+| --- | --- |
+| Open diagrams | `/open-diagram` |
+| More room | `/open-diagram panel` or `/open-diagram fullscreen` |
+| Change detail | **Overview / Granular**, or `/open-diagram overview` / `granular` |
+| Track changes | **Pause / Resume / Refresh** |
+| Navigate a focused panel | `j/k` select, `f` fullscreen, `p` pause/resume, `r` refresh |
+| Restore OpenCode's sidebar | **Classic sidebar**, `/open-diagram sidebar`, or panel `Escape` |
+| Share a diagram | **PNG / SVG / Save** |
+
+Descriptions and **Sources** stay separate. Wide diagrams scroll rather than
+clip; layout and navigation respect each family's structure. **Granular** shows
+internals present in the evidence, not invented implementation detail.
+
+Exports include the full active diagram, not terminal chrome. They follow the
+host's light/dark mode by default, with a persistent **export-only** theme override.
+Linux image clipboard support uses existing `wl-copy` or `xclip`; unsupported
+environments get a Save fallback. Save refuses existing files and symlinks.
+
+Read the [usage and export guide](docs/usage.md) for controls, caching behavior,
+SSH clipboard requirements, and rendering limits.
+
+## Under the hood
+
+The server owns evidence, validation, generation, and durable state. The TUI owns
+presentation. Generic graph layout uses pinned ELK.js in an isolated worker;
+sequence, timing, and circuit views use deterministic family-specific geometry.
+All layouts are local and shared by terminal and image rendering.
+
+- [Server and public RPC](src/diagram/server.ts)
+- [Engine and durable caches](src/diagram/engine.ts)
+- [Versioned notation contracts](src/diagram/notation-schema.ts)
+- [Shared layout](src/diagram/layout.ts) and [specialized geometry](src/diagram/notation-layout.ts)
+- [Model-independent authoring harness](docs/harness.md)
+
+## Develop and publish
+
+```sh
+npm ci
+npm run verify       # TypeScript + unit, native TUI, and isolated runtime checks
+npm run docs:images  # Regenerate this README's light/dark SVG and PNG images
+npm run docs:check   # Check SVG freshness and PNG signatures/dimensions
+npm pack --dry-run   # Inspect the package file list; does not publish
+```
+
+Runtime tests require `opencode` and `python3` on PATH. The native renderer test
+needs Node **26.4+** with `--experimental-ffi`; it skips on older Node versions.
+Tests use isolated fixture services, never paid models or the shared service.
+
+The **[maintainer publishing guide](docs/publishing.md)** enumerates verification,
+Git push, package preparation, npm publication, and consumer configuration.
+Pushing Git does **not** publish to npm or change repository visibility.
+
+## Trust and limits
+
+Diagrams are interpretations of bounded public session evidence, not proof of
+correctness or an exhaustive repository scan. Read the relevant files into the
+session; image-only schematics and omitted declarations cannot be reconstructed.
+Automatic backends receive those excerpts, so avoid admitting secrets.
+
+Failed updates retain the last valid diagram with a visible warning. Accepted
+graph text and citation labels persist in location-scoped plugin storage; source
+excerpts are transient. Open Diagram does not read another plugin's private state
+or change host model routing or theme settings.
+
+Circuit connectivity comes from explicit pins and nets—not crossing lines.
+PCB placement/routing, CAD import adapters, simulation, ERC/DRC, manufacturing
+outputs, and electrical-safety certification are outside this plugin's scope.

@@ -1,6 +1,7 @@
 import type { DiagramGraph } from "./schema.js"
 import { diagramTextWidth, layoutDiagram, wrapDiagramText } from "./layout.js"
 import { diagramArrowColor } from "./arrow-colors.js"
+import { renderSceneSVG, sceneMarkerSVG } from "./scene-export.js"
 
 export type DiagramExportColorMode = "light" | "dark"
 export type DiagramExportOptions = { selected?: string; colorMode?: DiagramExportColorMode }
@@ -28,7 +29,8 @@ export async function renderDiagramSVG(graph: DiagramGraph, options: DiagramExpo
   const caption = graph.title
   const layout = await layoutDiagram(graph, { columns: 88, selected: options.selected })
   const title = wrapDiagramText(caption, 86)
-  const top = MARGIN + (title.length + 1) * LINE
+  const summary = graph.notation && graph.summary ? wrapDiagramText(graph.summary, 86) : []
+  const top = MARGIN + (title.length + summary.length + 1) * LINE
   const width = Math.max(WIDTH, layout.width * CELL + MARGIN * 2)
   const height = Math.ceil(top + layout.height * LINE + MARGIN)
   const left = (width - layout.width * CELL) / 2
@@ -44,6 +46,8 @@ export async function renderDiagramSVG(graph: DiagramGraph, options: DiagramExpo
     elements.push(`<text x="${x}" y="${y}" fill="${color}"${bold ? ' font-weight="bold"' : ""}${length ? ` textLength="${length}" lengthAdjust="spacingAndGlyphs"` : ""}>${escape(value)}</text>`)
   }
   title.forEach((line, i) => text(line, MARGIN, MARGIN + (i + 1) * LINE, palette.text, true))
+  summary.forEach((line, i) => text(line, MARGIN, MARGIN + (title.length + i + 1) * LINE, palette.subdued))
+  if (layout.scene) elements.push(renderSceneSVG(layout.scene, { left, top, cell: CELL, line: LINE, dark, ...palette, escape }))
   for (const [edgeIndex, edge] of layout.edges.entries()) {
     const color = diagramArrowColor(edge.tone, dark)
     const source = layout.nodes.find((box) => box.node.id === edge.from)!
@@ -64,7 +68,16 @@ export async function renderDiagramSVG(graph: DiagramGraph, options: DiagramExpo
         start: Math.min(vertical ? a.y : a.x, vertical ? b.y : b.x), end: Math.max(vertical ? a.y : a.x, vertical ? b.y : b.x) })
     }
     const marker = tips.get(JSON.stringify(edge.points.at(-1)))! > 1 ? "shared" : edge.tone
-    elements.push(`<path d="${points.map((point, i) => `${i ? "L" : "M"}${point.x},${point.y}`).join(" ")}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow-${marker})"/>`)
+    let markers = edge.endMarker === "none" ? "" : ` marker-end="url(#arrow-${marker})"`
+    if (edge.endMarker && edge.endMarker !== "none" && edge.endMarker !== "arrow") {
+      elements.push(`<defs>${sceneMarkerSVG(`typed-end-${edgeIndex}`, edge.endMarker, color, palette.background)}</defs>`)
+      markers = ` marker-end="url(#typed-end-${edgeIndex})"`
+    }
+    if (edge.startMarker) {
+      elements.push(`<defs>${sceneMarkerSVG(`typed-start-${edgeIndex}`, edge.startMarker, color, palette.background, true)}</defs>`)
+      markers += ` marker-start="url(#typed-start-${edgeIndex})"`
+    }
+    elements.push(`<path d="${points.map((point, i) => `${i ? "L" : "M"}${point.x},${point.y}`).join(" ")}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"${edge.dashed ? ' stroke-dasharray="5 4"' : ""}${markers}/>`)
     edge.labelLines.forEach((line, i) => text(line, left + edge.labelX * CELL, top + (edge.labelY + i + 0.8) * LINE, color))
   }
   // Neutralize coincident lengths after every colored route is painted. Merely
@@ -89,7 +102,7 @@ export async function renderDiagramSVG(graph: DiagramGraph, options: DiagramExpo
   const marker = (id: number | "shared", color: string) => `<marker id="arrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="${color}"/></marker>`
   const markers = [...new Set(layout.edges.map((edge) => edge.tone))].map((tone) => marker(tone, diagramArrowColor(tone, dark))).join("")
     + ([...tips.values()].some((count) => count > 1) ? marker("shared", palette.border) : "")
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.floor(width * scale)}" height="${Math.floor(height * scale)}" viewBox="0 0 ${width} ${height}" role="img"><title>${escape(caption)}</title><defs>${markers}</defs><rect width="100%" height="100%" fill="${palette.background}"/><g font-family="DejaVu Sans Mono, monospace" font-size="16">${elements.join("")}</g></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.floor(width * scale)}" height="${Math.floor(height * scale)}" viewBox="0 0 ${width} ${height}" role="img"${graph.notation ? ` data-notation="${graph.notation.family}"` : ""}><title>${escape(caption)}</title><defs>${markers}</defs><rect width="100%" height="100%" fill="${palette.background}"/><g font-family="DejaVu Sans Mono, monospace" font-size="16">${elements.join("")}</g></svg>`
 }
 
 export async function renderDiagramPNG(graph: DiagramGraph, options: DiagramExportOptions = {}): Promise<Uint8Array> {

@@ -1,8 +1,13 @@
 import type { DiagramGraph } from "./schema.js"
-import stringWidth from "string-width"
+import { diagramTextWidth, wrapDiagramText } from "./diagram-text.js"
+export { diagramTextWidth, wrapDiagramText } from "./diagram-text.js"
 import { diagramArrowTones } from "./arrow-colors.js"
 import type { ElkNode } from "elkjs/lib/elk-api.js"
 import { solveLayout } from "./layout-solver.js"
+import type { DiagramScene, SceneMarker } from "./scene.js"
+import { emptyScene, sceneWireRuns } from "./scene.js"
+import { notationEdgeLabel, notationNodeLines } from "./notation.js"
+import { layoutNotation } from "./notation-layout.js"
 
 export type DiagramLine = { text: string; role: "label" | "meta" | "detail" | "sources" | "source" }
 export type DiagramBox = { node: DiagramGraph["nodes"][number]; x: number; y: number; width: number; height: number; lines: DiagramLine[] }
@@ -11,40 +16,19 @@ export type DiagramSide = "top" | "bottom" | "left" | "right"
 export type DiagramLink = DiagramGraph["edges"][number] & {
   cycle: boolean; direct: boolean; tone: number; points: DiagramPoint[]; labelLines: string[]; labelX: number; labelY: number
   sourceSide: DiagramSide; targetSide: DiagramSide
+  startMarker?: SceneMarker; endMarker?: SceneMarker | "none"; dashed?: boolean
 }
-export type DiagramLayout = { nodes: DiagramBox[]; edges: DiagramLink[]; width: number; height: number }
+export type DiagramLayout = { nodes: DiagramBox[]; edges: DiagramLink[]; width: number; height: number; scene?: DiagramScene }
 export type DiagramLayoutOptions = {
   columns?: number; selected?: string; changed?: readonly string[]
   sourceControl?: boolean; sources?: readonly string[]
 }
 
-const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" })
-export function diagramTextWidth(value: string): number {
-  // Same maintained cell-width dependency as OpenTUI, including supplementary
-  // CJK and grapheme clusters. Keep wrapping independent of native FFI loading.
-  return stringWidth(value)
-}
-
-/** Wrap at word boundaries where possible, never inside a Unicode grapheme. */
-export function wrapDiagramText(value: string, columns: number): string[] {
-  const width = Math.max(2, Math.floor(columns))
-  const lines: string[] = []
-  let line = ""
-  for (const word of value.split(/\s+/u)) {
-    if (!word) continue
-    if (line && diagramTextWidth(`${line} ${word}`) <= width) { line += ` ${word}`; continue }
-    if (line) { lines.push(line); line = "" }
-    for (const { segment } of segments.segment(word)) {
-      if (diagramTextWidth(line + segment) > width) { lines.push(line); line = "" }
-      line += segment
-    }
-  }
-  if (line || !lines.length) lines.push(line)
-  return lines
-}
-
 /** Stable topological flow order, excluding DFS return edges, not graph data. */
 export function diagramFlowOrder(graph: DiagramGraph) {
+  const notation = graph.notation
+  if (notation?.family === "sequence") return notation.participants.map((id) => graph.nodes.find((node) => node.id === id)!)
+  if (notation?.family === "timing") return notation.signals.map((signal) => graph.nodes.find((node) => node.id === signal.node)!)
   const visited = new Set<string>(); const active = new Set<string>(); const returns = new Set<number>()
   const visit = (id: string) => {
     if (visited.has(id)) return
@@ -98,6 +82,7 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
       lines.push(...wrapDiagramText(text, limit - 4).map((text) => ({ text, role })))
     }
     add(`${node.label}${node.status === "planned" ? " ~" : ""}${options.changed?.includes(node.id) ? " *" : ""}`, "label")
+    for (const line of notationNodeLines(graph, node.id)) add(line, "meta")
     if (selected) {
       add(`${node.kind} · ${node.status}`, "meta")
       if (node.detail) add(node.detail, "detail")
@@ -107,11 +92,56 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
     }
     return { node, x: 0, y: 0, width: Math.max(10, ...lines.map((line) => diagramTextWidth(line.text) + 4)), height: lines.length + 2, lines }
   })
+  const specialized = layoutNotation(graph, nodes, columns)
+  if (specialized) return specialized
+  const notation = graph.notation
+  const scene = notation ? emptyScene() : undefined
   const edges = graph.edges.map((edge, i): DiagramLink => {
     const cycle = index.get(edge.to)! <= index.get(edge.from)!
+    const label = notationEdgeLabel(graph, i)
     return { ...edge, cycle, direct: false, tone: tones[i], points: [], sourceSide: "bottom", targetSide: "top",
-      labelLines: edge.label || cycle ? wrapDiagramText(`${cycle ? "↺ " : ""}${edge.label}`, 16) : [], labelX: 0, labelY: 0 }
+      labelLines: label || (cycle && !notation) ? wrapDiagramText(`${cycle && !notation ? "↺ " : ""}${label}`, notation ? 24 : 16) : [], labelX: 0, labelY: 0 }
   })
+  if (notation?.family === "architecture") for (const link of notation.links) {
+    const edge = edges[link.edge]
+    edge.endMarker = link.direction === "none" ? "none" : "arrow"
+    if (link.direction === "both") edge.startMarker = "arrow"
+    edge.dashed = link.role === "dependency"
+  }
+  if (notation?.family === "class" || notation?.family === "er") for (const relation of notation.relationships) {
+    const edge = edges[relation.edge]
+    edge.endMarker = relation.kind === "inheritance" || relation.kind === "realization" ? "triangle" : relation.kind === "dependency" ? "open" : "none"
+    if (relation.kind === "aggregation" || relation.kind === "composition") edge.startMarker = relation.kind === "composition" ? "filled-diamond" : "diamond"
+    edge.dashed = relation.kind === "dependency" || relation.kind === "realization"
+  }
+  const ports = notation?.family === "architecture" ? notation.ports : []
+  const links = notation?.family === "architecture" ? notation.links : []
+  const endpoint = (i: number, source: boolean) => {
+    const link = links.find((link) => link.edge === i)
+    const id = source ? link?.fromPort : link?.toPort
+    return id ? `p${ports.findIndex((port) => port.id === id)}` : `${source ? "s" : "t"}${i}`
+  }
+  const children: ElkNode[] = nodes.map((box, i) => ({ id: `n${i}`, width: box.width, height: box.height * 2,
+    layoutOptions: { "elk.portConstraints": "FREE", "elk.nodeSize.constraints": "[]" },
+    ports: [...ports.flatMap((port, j) => port.node === box.node.id ? [{ id: `p${j}`, width: 0, height: 0 }] : []),
+      ...edges.flatMap((edge, j) => [
+        ...(edge.from === box.node.id && endpoint(j, true).startsWith("s") ? [{ id: endpoint(j, true), width: 0, height: 0 }] : []),
+        ...(edge.to === box.node.id && endpoint(j, false).startsWith("t") ? [{ id: endpoint(j, false), width: 0, height: 0 }] : []),
+      ])],
+  }))
+  const groups = notation && "groups" in notation ? notation.groups : []
+  const groupBoxes = new Map(groups.map((group, i) => [group.id, { id: `g${i}`, children: [] as ElkNode[],
+    layoutOptions: { "elk.padding": "[top=8,left=4,bottom=4,right=4]", "elk.nodeLabels.placement": "[INSIDE,H_LEFT,V_TOP]" },
+    labels: [{ text: `${group.label} (${group.kind})`, width: diagramTextWidth(`${group.label} (${group.kind})`), height: 2 }],
+  }]))
+  for (const group of groups) for (const id of group.nodes) groupBoxes.get(group.id)!.children.push(children[index.get(id)!])
+  const grouped = new Set(groups.flatMap((group) => group.nodes))
+  const rootChildren = children.filter((_, i) => !grouped.has(nodes[i].node.id))
+  for (const group of groups) {
+    const box = groupBoxes.get(group.id)!
+    if (group.parent) groupBoxes.get(group.parent)!.children.push(box)
+    else rootChildren.push(box)
+  }
   // Width is a preference, not a clipping constraint. Keep a downward flow and
   // allow more parallel nodes at larger widths; scroll handles dense graphs.
   // Selection/details do not change this bound and unexpectedly reorder layers.
@@ -119,6 +149,7 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
   const input: ElkNode = { id: "root", layoutOptions: {
     "elk.algorithm": "layered", "elk.direction": "DOWN", "elk.edgeRouting": "ORTHOGONAL",
     "elk.randomSeed": "1", "elk.separateConnectedComponents": "false",
+    ...(groups.length ? { "elk.hierarchyHandling": "INCLUDE_CHILDREN" } : {}),
     "elk.layered.layering.strategy": "COFFMAN_GRAHAM",
     "elk.layered.layering.coffmanGraham.layerBound": String(Math.max(1, Math.floor(columns / (typicalWidth + 8)))),
     "elk.layered.cycleBreaking.strategy": "MODEL_ORDER",
@@ -129,17 +160,24 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
     "elk.spacing.portPort": "2", "elk.spacing.nodeSelfLoop": "4", "elk.spacing.labelNode": "2",
     "elk.layered.spacing.nodeNodeBetweenLayers": "6", "elk.layered.spacing.edgeNodeBetweenLayers": "2",
     "elk.layered.spacing.edgeEdgeBetweenLayers": "2", "elk.padding": "[top=2,left=2,bottom=2,right=2]",
-  }, children: nodes.map((box, i) => ({ id: `n${i}`, width: box.width, height: box.height * 2,
-    layoutOptions: { "elk.portConstraints": "FREE", "elk.nodeSize.constraints": "[]" },
-    ports: edges.flatMap((edge, j) => [
-      ...(edge.from === box.node.id ? [{ id: `s${j}`, width: 0, height: 0 }] : []),
-      ...(edge.to === box.node.id ? [{ id: `t${j}`, width: 0, height: 0 }] : []),
-    ]),
-  })), edges: edges.map((edge, i) => ({ id: `e${i}`, sources: [`s${i}`], targets: [`t${i}`],
+  }, children: rootChildren, edges: edges.map((edge, i) => ({ id: `e${i}`, sources: [endpoint(i, true)], targets: [endpoint(i, false)],
     labels: edge.labelLines.length ? [{ text: edge.labelLines.join("\n"), width: Math.max(...edge.labelLines.map(diagramTextWidth)), height: edge.labelLines.length * 2 }] : [],
   })) }
   const result = await solveLayout(input)
-  const boxes = new Map((result.children ?? []).map((box) => [box.id, box]))
+  const boxes = new Map<string, ElkNode>()
+  const routedEdges = new Map<string, NonNullable<ElkNode["edges"]>[number]>()
+  const collect = (box: ElkNode, x = 0, y = 0) => {
+    const absolute = { ...box, x: x + (box.x ?? 0), y: y + (box.y ?? 0) }
+    boxes.set(box.id, absolute)
+    for (const edge of box.edges ?? []) routedEdges.set(edge.id, edge)
+    for (const child of box.children ?? []) collect(child, absolute.x, absolute.y)
+  }
+  collect(result)
+  for (const group of groups) {
+    const box = boxes.get(groupBoxes.get(group.id)!.id)!
+    scene!.regions.push({ x: round(box.x!), y: round(box.y! / 2), width: Math.ceil(box.width!), height: Math.ceil(box.height! / 2),
+      label: `${group.label} (${group.kind})`, style: "group" })
+  }
   nodes.forEach((box, i) => {
     const placed = boxes.get(`n${i}`)!
     box.x = round(placed.x!); box.y = round(placed.y! / 2)
@@ -154,18 +192,20 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
       y: side === "top" ? box.y - 1 : side === "bottom" ? box.y + box.height : round(point.y / 2) } }
   }
   edges.forEach((edge, i) => {
-    const routed = result.edges?.find((route) => route.id === `e${i}`)
+    const routed = routedEdges.get(`e${i}`)
     const section = routed?.sections?.[0]
     if (!section || routed!.sections!.length !== 1) throw new Error("Diagram route unavailable")
+    const container = boxes.get(routed!.container ?? "root")!
+    const offset = (point: DiagramPoint) => ({ x: point.x + (container?.x ?? 0), y: point.y + (container?.y ?? 0) })
     const from = index.get(edge.from)!; const to = index.get(edge.to)!
-    const start = port(section.startPoint, from, nodes[from]); const end = port(section.endPoint, to, nodes[to])
+    const start = port(offset(section.startPoint), from, nodes[from]); const end = port(offset(section.endPoint), to, nodes[to])
     edge.sourceSide = start.side; edge.targetSide = end.side
-    edge.points = [start.point, ...(section.bendPoints ?? []).map((p) => ({ x: round(p.x), y: round(p.y / 2) })), end.point]
+    edge.points = [start.point, ...(section.bendPoints ?? []).map(offset).map((p) => ({ x: round(p.x), y: round(p.y / 2) })), end.point]
       .filter((p, j, all) => !j || p.x !== all[j - 1].x || p.y !== all[j - 1].y)
     if (edge.points.length < 2 || edge.points.some((p, j, all) => !Number.isFinite(p.x + p.y)
       || (j > 0 && p.x !== all[j - 1].x && p.y !== all[j - 1].y))) throw new Error("Diagram route is not orthogonal")
     edge.direct = edge.points.length === 2 && edge.points[0].x === edge.points[1].x && edge.points[0].y < edge.points[1].y
-    if (edge.labelLines.length) { edge.labelX = round(routed!.labels![0].x!); edge.labelY = round(routed!.labels![0].y! / 2) }
+    if (edge.labelLines.length) { edge.labelX = round(routed!.labels![0].x! + (container?.x ?? 0)); edge.labelY = round((routed!.labels![0].y! + (container?.y ?? 0)) / 2) }
   })
   // Cards in one layer overlap vertically, but may be top-aligned or centered.
   // Read that row left to right regardless of an expanded card's height.
@@ -179,13 +219,17 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
     }
     reading.push(...row.sort((a, b) => a.x - b.x))
   }
-  return { nodes: reading, edges, width: Math.ceil(result.width!), height: Math.ceil(result.height! / 2) }
+  return { nodes: reading, edges, width: Math.ceil(result.width!), height: Math.ceil(result.height! / 2), ...(scene ? { scene } : {}) }
 }
 
 export type DiagramWireRun = { text: string; tone?: number }
 
 /** Rasterize only connectors; shared cells stay neutral rather than lie about ownership. */
 export function diagramWireRuns(layout: DiagramLayout): DiagramWireRun[] {
+  if (layout.scene) return sceneWireRuns({ ...layout.scene, paths: [...layout.scene.paths, ...layout.edges.map((edge, i) => ({
+    points: edge.points, owner: `edge-${i}`, tone: edge.tone, dashed: edge.dashed, startMarker: edge.startMarker,
+    endMarker: edge.endMarker === "none" ? undefined : edge.endMarker ?? "arrow",
+  }))] }, layout.width, layout.height)
   const cells = Array.from({ length: layout.height }, () => Array<number>(layout.width).fill(0))
   const owners = new Map<string, Map<DiagramLink, number>>()
   const arrows = new Map<string, string>()
