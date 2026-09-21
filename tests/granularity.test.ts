@@ -21,10 +21,10 @@ test("granular author request carries layer/parameter instructions through nativ
   assert.doesNotMatch(diagramRequest(evidence, null, false).instruction, /Granularity: granular/)
   const request = diagramRequest(evidence, null, false, "granular")
   assert.equal(request.input.granularity, "granular")
-  assert.match(request.instruction, /individual convolution stages/)
-  assert.match(request.instruction, /kernel sizes, strides, padding, head counts/)
-  assert.match(request.instruction, /expand each listed stage into its own block/)
-  assert.match(request.instruction, /"evidence":\["e1","e2"\]/)
+  assert.match(request.instruction, /neural networks show specified convolution/)
+  assert.match(request.instruction, /kernels, widths, strides, padding, head\/repeat counts/)
+  assert.match(request.instruction, /Expand configured stages individually/)
+  assert.match(request.instruction, /evidence is an array of 1-6 CURRENT IDs/)
   const client = createDiagramClient(ConfigSchema.parse({ backend: "opencode", providerID: "fixture", model: "fixture" }), fetch,
     async (input) => {
       assert.match(input.prompt, /Granularity: granular/)

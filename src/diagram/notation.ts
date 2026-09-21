@@ -16,7 +16,14 @@ export function diagramEvidence(graph: DiagramGraph): string[] {
 }
 export function mapDiagramEvidence(graph: DiagramGraph, map: (ids: string[]) => string[]): DiagramGraph {
   const result = structuredClone(graph)
-  visitEvidence(result, (ids) => ids.splice(0, ids.length, ...map(ids)))
+  // structuredClone preserves shared references. Map a shared citation array
+  // once, otherwise a second visit can mistake newly mapped IDs for old ones.
+  const mapped = new WeakSet<string[]>()
+  visitEvidence(result, (ids) => {
+    if (mapped.has(ids)) return
+    mapped.add(ids)
+    ids.splice(0, ids.length, ...map(ids))
+  })
   return result
 }
 

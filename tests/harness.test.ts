@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { diagramOutputSchema, diagramRequest, parseDiagramOutput, validateDiagramOutput, ViewAnalysisSchema } from "../src/diagram/harness.js"
+import { diagramOutputSchema, nativeDiagramOutputSchema, diagramRequest, parseDiagramOutput, validateDiagramOutput, ViewAnalysisSchema } from "../src/diagram/harness.js"
 import { DiagramEngine } from "../src/diagram/engine.js"
+import { SnapshotSchema } from "../src/diagram/schema.js"
 
 const evidence = [{ id: "e_source", label: "Current design", text: "A client sends orders to a queue. A worker stores them." }]
 const node = (id: string, kind: string) => ({ id, label: id, kind, detail: "", status: "planned", evidence: ["e_source"] })
@@ -17,6 +18,10 @@ test("model-neutral harness accepts multiple views and arbitrary node types", ()
   assert.match(request.instruction, /Any domain/)
   assert.ok(request.outputSchema)
   assert.equal(request.input.evidence, evidence)
+  for (const depth of ["overview", "granular"] as const) {
+    assert.ok(SnapshotSchema.shape.instruction.safeParse(diagramRequest(evidence, null, false, depth).instruction).success,
+      "shared authoring policy must fit the public snapshot contract at both depths")
+  }
   const result = parseDiagramOutput(JSON.stringify(output()), evidence)
   assert.equal(result.views?.length, 2)
   assert.equal(result.views[0].graph.title, "Order flow")
@@ -34,6 +39,32 @@ test("strict endpoint schemas require every property without changing legacy run
   }
   visit(diagramOutputSchema({ strict: true }))
   assert.equal(validateDiagramOutput(output(), evidence).views.length, 2)
+  const native = nativeDiagramOutputSchema()
+  const expand = (value: any): any => {
+    if (Array.isArray(value)) return value.map(expand)
+    if (!value || typeof value !== "object") return value
+    if (value.$ref) return expand(native.$defs![value.$ref.split("/").at(-1)])
+    return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "$defs").map(([key, entry]) => [key, expand(entry)]))
+  }
+  assert.deepEqual(expand(native), diagramOutputSchema(), "native references preserve every schema constraint")
+  assert.ok(JSON.stringify(native).length < JSON.stringify(diagramOutputSchema()).length * 0.75)
+})
+
+test("JSON parsing preserves literals and rejects malformed output without echoing values", () => {
+  const value = output()
+  value.views[0].graph.nodes[0].detail = 'Keep literal ,} and ,] plus "quoted" text unchanged'
+  const raw = JSON.stringify(value)
+  for (const text of [raw, `\`\`\`json\n${raw}\n\`\`\``]) {
+    assert.deepEqual(parseDiagramOutput(text, evidence), value)
+  }
+  for (const text of [raw.slice(0, -1), `${raw}\n${raw}`, `Diagram: [${raw}]`, '{"relevant":true "views":[]}', raw.slice(0, -1) + ",}",
+    '{relevant:true,views:[', '{relevant:process.exit(),views:[]}', '{relevant:true,views:undefined}', '{relevant:true,/* unterminated']) {
+    assert.throws(() => parseDiagramOutput(text, evidence), /not valid JSON/)
+  }
+  assert.throws(() => parseDiagramOutput('{"PRIVATE_FIELD" "PRIVATE_VALUE"}', evidence), (error: Error) =>
+    /not valid JSON \(colon; \d+ chars\)/.test(error.message) && !error.message.includes("PRIVATE"))
+  const uncited = output(); uncited.views[0].graph.nodes[0].evidence = ["invented"]
+  assert.throws(() => parseDiagramOutput(JSON.stringify(uncited), evidence), /outside current snapshot/)
 })
 
 test("public harness rejects unknown citations, duplicate views and malformed output without echoing bodies", () => {
@@ -45,6 +76,10 @@ test("public harness rejects unknown citations, duplicate views and malformed ou
   assert.throws(() => validateDiagramOutput(duplicate, evidence), /Invalid diagram schema/)
   assert.throws(() => parseDiagramOutput("PRIVATE_NOT_JSON", evidence), (error: Error) => !error.message.includes("PRIVATE_NOT_JSON") && /not valid JSON/.test(error.message))
   assert.throws(() => validateDiagramOutput({ ...output(), extra: "PRIVATE" }, evidence), /Invalid diagram schema/)
+  const malformed = output()
+  Object.assign(malformed.views[0].graph.nodes[0], { evidence: null, PRIVATE_PROPERTY: "PRIVATE_VALUE" })
+  assert.throws(() => validateDiagramOutput(malformed, evidence), (error: Error) =>
+    /nodes.0.evidence \(expected array\)/.test(error.message) && /unexpected fields/.test(error.message) && !/PRIVATE/.test(error.message))
 })
 
 test("empty unrelated result and legacy single-view adapters remain valid", () => {

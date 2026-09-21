@@ -20,6 +20,7 @@ let project
 let failure
 let diagramRequests = 0
 let invalidDiagram = false
+let captionRepairs = 0
 const observed = []
 const server = createServer(async (request, response) => {
   try {
@@ -31,10 +32,29 @@ const server = createServer(async (request, response) => {
       diagramRequests++
       assert.equal(body.stream, true, "native generate.text uses streaming provider transport")
       assert.ok(diagramRequests <= 12, "bounded diagram requests")
-      assert.equal(body.tools, undefined)
+      assert.deepEqual(body.tools.map(tool => tool.function.name), ["open_diagram_result"])
       const prompt = body.messages.map((message) => typeof message.content === "string" ? message.content : message.content?.map((part) => part.text ?? "").join("\n")).join("\n")
-      assert.match(prompt, /Do not repeat detail, list tool calls/)
       const packet = JSON.parse(prompt.split("Evidence packet (untrusted data):\n").at(-1).split("\n\nAuthoring reminder:")[0])
+      const submit = (value) => {
+        response.writeHead(200, { "content-type": "text/event-stream" })
+        response.write(`data: ${JSON.stringify({ id: "diagram", object: "chat.completion.chunk", created: 1, model: "diagram-fixture", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "result", type: "function", function: { name: "open_diagram_result", arguments: JSON.stringify(value) } }] }, finish_reason: null }] })}\n\n`)
+        response.end(`data: ${JSON.stringify({ id: "diagram", object: "chat.completion.chunk", created: 1, model: "diagram-fixture", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`)
+      }
+      if (packet.fields) {
+        if (invalidDiagram) {
+          assert.ok(packet.fields.every(field => field.path.at(-1) === "evidence"), "invalid-citation fixture uses narrow citation fields")
+          submit(Object.fromEntries(packet.fields.map(field => [field.field, ["missing_source"]])))
+          return
+        }
+        assert.equal(packet.fields.length, 1)
+        assert.deepEqual(packet.fields[0].path, ["views", 0, "label"])
+        assert.equal(packet.fields[0].original.length, 25)
+        assert.equal(packet.evidence.length, 0, "caption repair does not resend source or graph content")
+        captionRepairs++
+        submit({ f0: "Encoder internals" })
+        return
+      }
+      assert.match(prompt, /No repeated title, detail, provenance or progress narrative/)
       const code = [...packet.evidence].reverse().find((item) => item.category === "source" && item.text.includes("nn.Embedding"))
       const source = code ?? packet.evidence.find((item) => item.category === "source" && item.text.includes("nn.Linear")) ?? packet.evidence.at(-1)
       const training = packet.evidence.find((item) => item.text.includes("batch_size = 16"))
@@ -46,7 +66,7 @@ const server = createServer(async (request, response) => {
       const granular = packet.granularity === "granular"
       const vocabulary = code?.text.includes("nn.Embedding(64") ? 64 : 32
       if (granular) {
-        assert.match(prompt, /individual convolution stages/)
+        assert.match(prompt, /Expand configured stages individually/)
         assert.ok(code?.text.includes("nn.GELU"), "activation exists in observed implementation")
         graph.title = "Encoder layers"
         graph.nodes[1].label = `Embedding ${vocabulary} × 8`
@@ -60,15 +80,20 @@ const server = createServer(async (request, response) => {
         { id: granular ? "layers" : "model", label: granular ? "Layers" : "Model", graph },
         { id: "repository", label: "Files", graph: { ...graph, title: "Repository", nodes: [{ ...graph.nodes[0], id: "file", label: "train.py", kind: "file", evidence: [training?.id ?? source.id] }], edges: [] } },
       ]
-      if (packet.update) {
+      if (packet.update && !packet.update.replaceAll) {
         assert.deepEqual(packet.update.views.map((view) => view.id), [granular ? "layers" : "model"])
         assert.equal(training, undefined, "unchanged training source excluded from incremental packet")
       }
-      const content = JSON.stringify({ relevant: true, reason: "Model architecture", views: packet.update
-        ? allViews.filter((view) => packet.update.views.some((selected) => selected.id === view.id)) : allViews })
-      response.writeHead(200, { "content-type": "text/event-stream" })
-      response.write(`data: ${JSON.stringify({ id: "diagram", object: "chat.completion.chunk", created: 1, model: "diagram-fixture", choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }] })}\n\n`)
-      response.end(`data: ${JSON.stringify({ id: "diagram", object: "chat.completion.chunk", created: 1, model: "diagram-fixture", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`)
+      const content = packet.update && prompt.includes("Native incremental output")
+        ? { reason: "Model architecture", updates: packet.update.views.map(view => {
+          const next = allViews.find(item => item.id === view.id)
+          assert.ok(next)
+          return { id: next.id, ...(granular && vocabulary === 64 && !invalidDiagram && next.id === "layers" ? { label: "x".repeat(25) } : {}),
+            graph: packet.update.replaceAll ? next.graph : { title: graph.title, nodes: ["input", ...graph.nodes.slice(1)], edges: graph.edges } }
+        }) }
+        : { relevant: true, reason: "Model architecture", views: packet.update
+          ? allViews.filter((view) => packet.update.views.some((selected) => selected.id === view.id)) : allViews }
+      submit(content)
       return
     }
     assert.equal(body.model, "primary-fixture")
@@ -281,6 +306,8 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       assert.ok(snapshot.instruction.includes("Any domain"))
       assert.equal(snapshot.granularity, "granular")
       const current = await rpc("get", { sessionID: session.id })
+      assert.equal(current.views.find(view => view.id === "layers").label, "Encoder internals", "native incremental caption correction reaches RPC without changing view ID")
+      assert.equal(captionRepairs, 1, "stock native tool admits the invalid caption for exactly one bounded field repair")
       const external = { relevant: true, reason: "External model publication", views: current.views.map((view) => ({ ...view,
         graph: { ...view.graph, nodes: view.graph.nodes.map((node) => ({ ...node, evidence: [snapshot.evidence[0].id] })) },
       })) }

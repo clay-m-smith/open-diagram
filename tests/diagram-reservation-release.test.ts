@@ -27,7 +27,8 @@ async function fixture() {
     rpc: { register: async (_rpc: unknown, handlers: unknown) => { methods = handlers; return { events: { emit: async (_n: string, value: unknown) => { updates.push(value) } } } } },
     storage: { get: async () => { loads++; return undefined }, set: async () => {} }, event: { async *subscribe() {} },
   }
-  const cleanup = await defineDiagramPlugin({ backend: "opencode", providerID: "fixture", model: "fixture", intervalMs: 1000, debounceMs: 100 }).setup(ctx as unknown as Plugin.Context)
+  const cleanup = await defineDiagramPlugin({ backend: "opencode", providerID: "fixture", model: "fixture", intervalMs: 1000, debounceMs: 100 },
+    async () => ({ generate: ctx.generate.text, owns: () => false })).setup(ctx as unknown as Plugin.Context)
   const request = { signal: new AbortController().signal }
   return { methods, hooks, tools, updates, request, calls: () => calls, loads: () => loads, signal: () => activeSignal,
     failContext: (value: boolean) => { failContext = value }, foreign: () => { rejectLocation = true },

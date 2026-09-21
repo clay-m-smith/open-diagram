@@ -19,18 +19,31 @@ const bounds = (nodes: DiagramBox[], scene: DiagramScene): DiagramLayout => {
 const card = (box: DiagramBox, x: number, y: number, lines = box.lines): DiagramBox => ({ ...box, x: integer(x), y: integer(y),
   width: Math.max(10, ...lines.map((line) => textWidth(line.text) + 4)), height: Math.max(2, lines.length + 2), lines })
 
-function sequence(graph: DiagramGraph, boxes: DiagramBox[]): DiagramLayout {
+function sequence(graph: DiagramGraph, boxes: DiagramBox[], columns: number): DiagramLayout {
   const notation = graph.notation!
   if (notation.family !== "sequence") throw new Error("Unexpected notation")
   const byNode = new Map(boxes.map((box) => [box.node.id, box]))
-  const labelWidth = Math.max(10, ...notation.messages.map((message) => textWidth(message.label) + 4))
   const headers = notation.participants.map((id) => byNode.get(id)!)
-  const slot = Math.max(labelWidth + 4, ...headers.map((box) => Math.max(10, box.width) + 6))
+  const labelLimit = Math.max(8, Math.min(24, Math.floor((columns - 4) / Math.max(2, headers.length))))
+  const labels = notation.messages.map((message) => wrapDiagramText(message.label, labelLimit))
+  // Each label uses its own gap, not a global slot based on the longest label.
+  // Wrap vertically before widening a gap; keep text off adjacent lifelines.
+  const gaps = headers.map(() => 0)
+  notation.messages.forEach((message, i) => {
+    const left = Math.min(notation.participants.indexOf(message.from), notation.participants.indexOf(message.to))
+    gaps[left] = Math.max(gaps[left], ...labels[i].map((line) => textWidth(line) + 6))
+  })
   const fragmentDepth = (fragment: typeof notation.fragments[number], index: number) => notation.fragments.filter((other, j) =>
     j !== index && other.from <= fragment.from && other.to >= fragment.to
       && (other.from < fragment.from || other.to > fragment.to || j < index)).length
   const depth = Math.max(0, ...notation.fragments.map(fragmentDepth))
-  const nodes = headers.map((box, i) => card(box, 2 + depth * 2 + i * slot, 2))
+  const nodes: DiagramBox[] = []
+  headers.forEach((box, i) => {
+    const previous = nodes[i - 1]
+    const x = previous ? Math.max(previous.x + previous.width + 4,
+      previous.x + Math.floor(previous.width / 2) + gaps[i - 1] - Math.floor(box.width / 2)) : 2 + depth * 2
+    nodes.push(card(box, x, 2))
+  })
   const center = new Map(nodes.map((box) => [box.node.id, box.x + Math.floor(box.width / 2)]))
   const headerBottom = Math.max(...nodes.map((box) => box.y + box.height))
   const scene = emptyScene()
@@ -40,7 +53,7 @@ function sequence(graph: DiagramGraph, boxes: DiagramBox[]): DiagramLayout {
     for (const fragment of notation.fragments.filter((fragment) => fragment.from === index).sort((a, b) => b.to - a.to)) {
       starts.set(fragment.id, nextY); nextY += 2
     }
-    messageRows.push(nextY + 1); nextY += 4
+    messageRows.push(nextY + labels[index].length); nextY += labels[index].length + 3
     for (const fragment of notation.fragments.filter((fragment) => fragment.to === index).sort((a, b) => b.from - a.from)) {
       ends.set(fragment.id, nextY); nextY += 2
     }
@@ -56,7 +69,8 @@ function sequence(graph: DiagramGraph, boxes: DiagramBox[]): DiagramLayout {
       : [{ x: from, y }, { x: to, y }]
     scene.paths.push({ owner: `message:${message.id}`, points: path, dashed: message.kind === "return", endMarker: marker })
     const left = Math.min(from, to)
-    scene.texts.push({ x: left + (from === to ? 4 : 1), y: y - 1, text: message.label, tone: 1 })
+    labels[index].forEach((text, line) => scene.texts.push({ x: left + (from === to ? 4 : 3),
+      y: y - labels[index].length + line, text, tone: 1 }))
   })
   notation.fragments.forEach((fragment, index) => {
     const y = starts.get(fragment.id)!
@@ -73,7 +87,7 @@ function sequence(graph: DiagramGraph, boxes: DiagramBox[]): DiagramLayout {
   return bounds(nodes, scene)
 }
 
-function timing(graph: DiagramGraph, boxes: DiagramBox[], columns: number): DiagramLayout {
+function timing(graph: DiagramGraph, boxes: DiagramBox[]): DiagramLayout {
   const notation = graph.notation!
   if (notation.family !== "timing") throw new Error("Unexpected notation")
   const byNode = new Map(boxes.map((box) => [box.node.id, box]))
@@ -91,7 +105,7 @@ function timing(graph: DiagramGraph, boxes: DiagramBox[], columns: number): Diag
   }
   const x = new Map<number, number>(); let cursor = 0
   for (const time of times) { x.set(time, cursor); cursor += valueWidth.get(time)! + 3 }
-  const plotWidth = Math.max(32, cursor, Math.max(20, Math.min(500, integer(columns))))
+  const plotWidth = Math.max(32, cursor)
   const left = Math.max(...notation.signals.map((signal) => Math.max(byNode.get(signal.node)!.width, textWidth(signal.node) + 4))) + 3
   const scene = emptyScene(); const nodes: DiagramBox[] = []; let y = 5
   scene.texts.push({ x: left, y: 0, text: "Event-spaced timing (not to scale)" })
@@ -181,8 +195,8 @@ export function layoutNotation(graph: DiagramGraph, boxes: DiagramBox[], columns
   if (!graph.notation || ["architecture", "flowchart", "state", "class", "er"].includes(graph.notation.family)) return undefined
   const copied = clone(boxes)
   switch (graph.notation.family) {
-    case "sequence": return sequence(graph, copied)
-    case "timing": return timing(graph, copied, columns)
+    case "sequence": return sequence(graph, copied, columns)
+    case "timing": return timing(graph, copied)
     case "circuit": return circuit(graph, copied)
   }
 }

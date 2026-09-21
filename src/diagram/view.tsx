@@ -51,12 +51,16 @@ export function CompactDiagram(props: {
   const [problem, setProblem] = createSignal<string>()
   const empty: DiagramLayout = { nodes: [], edges: [], width: 1, height: 1 }
   const layout = createMemo(() => solved()?.graph === props.graph ? solved()!.layout : empty)
+  const initialLeft = () => layout().width > columns() ? Math.max(0, (layout().nodes[0]?.x ?? 0) - 1) : 0
+  const canvasWidth = () => Math.max(layout().width, columns() + initialLeft())
   let pending: { graph: DiagramGraph; options: DiagramLayoutOptions } | undefined
   let running = false
   let scroll: ScrollBoxRenderable | undefined
   let reveal: string | undefined
+  let alignFirst = false
   const renderer = useRenderer()
   const revealHorizontal = () => {
+    if (alignFirst && scroll) { scroll.scrollLeft = initialLeft(); alignFirst = false }
     if (reveal) { scroll?.scrollChildIntoView(`open-diagram-node-${reveal}`); reveal = undefined }
   }
   renderer.on("frame", revealHorizontal)
@@ -71,6 +75,7 @@ export function CompactDiagram(props: {
       try {
         const result = await layoutDiagram(request.graph, request.options)
         if (disposed || pending) continue
+        alignFirst = !props.selected
         setSolved({ graph: request.graph, layout: result })
         reveal = props.selected ?? result.nodes[0]?.node.id
         props.onLayout?.(result.nodes.map((box) => box.node))
@@ -100,12 +105,16 @@ export function CompactDiagram(props: {
     <Show when={working()}><box id="open-diagram-layout-pending" width={0} height={0} /></Show>
     <Show when={problem()}><text fg={props.colors.subdued}>{problem()}</text></Show>
     <Show when={!layout().nodes.length && working()}><text fg={props.colors.subdued}>Arranging diagram…</text></Show>
-    <scrollbox ref={(value) => { scroll = value }} width="100%" height={layout().height + (layout().width > columns() ? 1 : 0)} scrollX={true} scrollY={false} flexShrink={0}
-      verticalScrollbarOptions={{ visible: false }} horizontalScrollbarOptions={{ visible: layout().width > columns() }}
-      contentOptions={{ width: Math.max(columns(), layout().width), minWidth: Math.max(columns(), layout().width),
-        maxWidth: Math.max(columns(), layout().width), height: layout().height, minHeight: layout().height, maxHeight: layout().height }}>
-    <box width={Math.max(columns(), layout().width)} height={layout().height} flexShrink={0} flexDirection="column">
-    <box position="absolute" top={0} left={Math.max(0, Math.floor((columns() - layout().width) / 2))} width={layout().width} height={layout().height} flexDirection="column">
+    <scrollbox id="open-diagram-graph-scroll" ref={(value) => { scroll = value }} width="100%" height={layout().height + (canvasWidth() > columns() ? 1 : 0)} scrollX={true} scrollY={false} flexShrink={0}
+      onMouseScroll={(event) => {
+        const direction = event.scroll?.direction
+        if (event.modifiers.shift ? direction === "up" || direction === "down" : direction === "left" || direction === "right") event.stopPropagation()
+      }}
+      verticalScrollbarOptions={{ visible: false }} horizontalScrollbarOptions={{ visible: canvasWidth() > columns() }}
+      contentOptions={{ width: canvasWidth(), minWidth: canvasWidth(),
+        maxWidth: canvasWidth(), height: layout().height, minHeight: layout().height, maxHeight: layout().height }}>
+    <box width={canvasWidth()} height={layout().height} flexShrink={0} flexDirection="column">
+    <box position="absolute" top={0} left={0} width={layout().width} height={layout().height} flexDirection="column">
       <For each={layout().scene?.regions ?? []}>{(region) => <box position="absolute" left={region.x} top={region.y}
         width={region.width} height={region.height} border borderStyle="single" borderColor={props.colors.border}
         title={region.label} titleColor={props.colors.subdued} />}</For>

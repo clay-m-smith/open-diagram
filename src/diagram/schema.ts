@@ -34,7 +34,7 @@ export const GraphSchema = z.object({
 export type DiagramGraph = z.infer<typeof GraphSchema>
 export const ViewSchema = z.object({ id, label: text(24).min(1), graph: GraphSchema }).strict()
 export type DiagramView = z.infer<typeof ViewSchema>
-export type DiagramUpdate = { views: DiagramView[]; maxNodes?: number }
+export type DiagramUpdate = { views: DiagramView[]; maxNodes?: number; replaceAll?: boolean }
 const ViewsSchema = z.array(ViewSchema).max(4).superRefine((views, ctx) => {
   if (new Set(views.map((view) => view.id)).size !== views.length) ctx.addIssue({ code: "custom", message: "Duplicate view IDs" })
   if (views.reduce((sum, view) => sum + view.graph.nodes.length, 0) > 48) ctx.addIssue({ code: "custom", message: "Too many total nodes" })
@@ -88,7 +88,7 @@ export const SnapshotSchema = z.object({
   version: z.literal(1), sessionID: z.string().min(1), epoch: id, token: z.string().min(1).max(128),
   granularity: GranularitySchema.default("overview"),
   evidence: z.array(z.object({ id, label: text(160), text: z.string().max(4000),
-    at: z.number().optional(), category: z.enum(["request", "source", "structure", "recent", "inventory", "assistant"]).optional(),
+    at: z.number().optional(), category: z.enum(["request", "context", "source", "structure", "recent", "inventory", "assistant"]).optional(),
     file: id.optional(), mutation: z.boolean().optional(), fingerprint: id.optional(),
   }).strict()).max(32),
   views: z.array(z.object({ id, label: text(24) }).strict()).max(4),

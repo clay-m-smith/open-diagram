@@ -8,6 +8,8 @@ import type { DiagramScene, SceneMarker } from "./scene.js"
 import { emptyScene, sceneWireRuns } from "./scene.js"
 import { notationEdgeLabel, notationNodeLines } from "./notation.js"
 import { layoutNotation } from "./notation-layout.js"
+import { diagramLayoutCost } from "./layout-quality.js"
+import { simplifyDiagramRoutes } from "./route-cleanup.js"
 
 export type DiagramLine = { text: string; role: "label" | "meta" | "detail" | "sources" | "source" }
 export type DiagramBox = { node: DiagramGraph["nodes"][number]; x: number; y: number; width: number; height: number; lines: DiagramLine[] }
@@ -106,7 +108,8 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
     const edge = edges[link.edge]
     edge.endMarker = link.direction === "none" ? "none" : "arrow"
     if (link.direction === "both") edge.startMarker = "arrow"
-    edge.dashed = link.role === "dependency"
+    // Architectural dependency is already stated in the label. Keep connectors
+    // continuous; reserve dashed strokes for notation with standard dash meaning.
   }
   if (notation?.family === "class" || notation?.family === "er") for (const relation of notation.relationships) {
     const edge = edges[relation.edge]
@@ -131,7 +134,9 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
   }))
   const groups = notation && "groups" in notation ? notation.groups : []
   const groupBoxes = new Map(groups.map((group, i) => [group.id, { id: `g${i}`, children: [] as ElkNode[],
-    layoutOptions: { "elk.padding": "[top=8,left=4,bottom=4,right=4]", "elk.nodeLabels.placement": "[INSIDE,H_LEFT,V_TOP]" },
+    // A top-left ELK label reserves both top AND left space. Our title is drawn
+    // on the region border; reserve its width without an empty left-hand lane.
+    layoutOptions: { "elk.padding": "[top=4,left=2,bottom=2,right=2]", "elk.nodeLabels.placement": "[INSIDE,H_CENTER,V_TOP]" },
     labels: [{ text: `${group.label} (${group.kind})`, width: diagramTextWidth(`${group.label} (${group.kind})`), height: 2 }],
   }]))
   for (const group of groups) for (const id of group.nodes) groupBoxes.get(group.id)!.children.push(children[index.get(id)!])
@@ -142,9 +147,8 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
     if (group.parent) groupBoxes.get(group.parent)!.children.push(box)
     else rootChildren.push(box)
   }
-  // Width is a preference, not a clipping constraint. Keep a downward flow and
-  // allow more parallel nodes at larger widths; scroll handles dense graphs.
-  // Selection/details do not change this bound and unexpectedly reorder layers.
+  // Card count alone cannot bound width: center labels create additional lanes.
+  // Keep downward flow, then compare actual routed geometry and label placement.
   const typicalWidth = Math.max(18, ...ordered.map((node) => Math.min(34, diagramTextWidth(node.label) + 4)))
   const input: ElkNode = { id: "root", layoutOptions: {
     "elk.algorithm": "layered", "elk.direction": "DOWN", "elk.edgeRouting": "ORTHOGONAL",
@@ -160,66 +164,142 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
     "elk.spacing.portPort": "2", "elk.spacing.nodeSelfLoop": "4", "elk.spacing.labelNode": "2",
     "elk.layered.spacing.nodeNodeBetweenLayers": "6", "elk.layered.spacing.edgeNodeBetweenLayers": "2",
     "elk.layered.spacing.edgeEdgeBetweenLayers": "2", "elk.padding": "[top=2,left=2,bottom=2,right=2]",
+    "elk.nodeLabels.padding": "[top=0,left=0,bottom=0,right=0]",
   }, children: rootChildren, edges: edges.map((edge, i) => ({ id: `e${i}`, sources: [endpoint(i, true)], targets: [endpoint(i, false)],
     labels: edge.labelLines.length ? [{ text: edge.labelLines.join("\n"), width: Math.max(...edge.labelLines.map(diagramTextWidth)), height: edge.labelLines.length * 2 }] : [],
   })) }
-  const result = await solveLayout(input)
-  const boxes = new Map<string, ElkNode>()
-  const routedEdges = new Map<string, NonNullable<ElkNode["edges"]>[number]>()
-  const collect = (box: ElkNode, x = 0, y = 0) => {
-    const absolute = { ...box, x: x + (box.x ?? 0), y: y + (box.y ?? 0) }
-    boxes.set(box.id, absolute)
-    for (const edge of box.edges ?? []) routedEdges.set(edge.id, edge)
-    for (const child of box.children ?? []) collect(child, absolute.x, absolute.y)
-  }
-  collect(result)
-  for (const group of groups) {
-    const box = boxes.get(groupBoxes.get(group.id)!.id)!
-    scene!.regions.push({ x: round(box.x!), y: round(box.y! / 2), width: Math.ceil(box.width!), height: Math.ceil(box.height! / 2),
-      label: `${group.label} (${group.kind})`, style: "group" })
-  }
-  nodes.forEach((box, i) => {
-    const placed = boxes.get(`n${i}`)!
-    box.x = round(placed.x!); box.y = round(placed.y! / 2)
-    box.width = Math.ceil(placed.width!); box.height = Math.ceil(placed.height! / 2)
-  })
-  const port = (point: DiagramPoint, i: number, box: DiagramBox): { side: DiagramSide; point: DiagramPoint } => {
-    const raw = boxes.get(`n${i}`)!
-    const sides: Array<[DiagramSide, number]> = [["left", Math.abs(point.x - raw.x!)], ["right", Math.abs(point.x - raw.x! - raw.width!)],
-      ["top", Math.abs(point.y - raw.y!)], ["bottom", Math.abs(point.y - raw.y! - raw.height!)]]
-    const side = sides.sort((a, b) => a[1] - b[1])[0][0]
-    return { side, point: { x: side === "left" ? box.x - 1 : side === "right" ? box.x + box.width : round(point.x),
-      y: side === "top" ? box.y - 1 : side === "bottom" ? box.y + box.height : round(point.y / 2) } }
-  }
-  edges.forEach((edge, i) => {
-    const routed = routedEdges.get(`e${i}`)
-    const section = routed?.sections?.[0]
-    if (!section || routed!.sections!.length !== 1) throw new Error("Diagram route unavailable")
-    const container = boxes.get(routed!.container ?? "root")!
-    const offset = (point: DiagramPoint) => ({ x: point.x + (container?.x ?? 0), y: point.y + (container?.y ?? 0) })
-    const from = index.get(edge.from)!; const to = index.get(edge.to)!
-    const start = port(offset(section.startPoint), from, nodes[from]); const end = port(offset(section.endPoint), to, nodes[to])
-    edge.sourceSide = start.side; edge.targetSide = end.side
-    edge.points = [start.point, ...(section.bendPoints ?? []).map(offset).map((p) => ({ x: round(p.x), y: round(p.y / 2) })), end.point]
-      .filter((p, j, all) => !j || p.x !== all[j - 1].x || p.y !== all[j - 1].y)
-    if (edge.points.length < 2 || edge.points.some((p, j, all) => !Number.isFinite(p.x + p.y)
-      || (j > 0 && p.x !== all[j - 1].x && p.y !== all[j - 1].y))) throw new Error("Diagram route is not orthogonal")
-    edge.direct = edge.points.length === 2 && edge.points[0].x === edge.points[1].x && edge.points[0].y < edge.points[1].y
-    if (edge.labelLines.length) { edge.labelX = round(routed!.labels![0].x! + (container?.x ?? 0)); edge.labelY = round((routed!.labels![0].y! + (container?.y ?? 0)) / 2) }
-  })
-  // Cards in one layer overlap vertically, but may be top-aligned or centered.
-  // Read that row left to right regardless of an expanded card's height.
-  nodes.sort((a, b) => a.y - b.y || a.x - b.x)
-  const reading: DiagramBox[] = []
-  for (let i = 0; i < nodes.length;) {
-    const row = [nodes[i++]]
-    let bottom = row[0].y + row[0].height
-    while (i < nodes.length && nodes[i].y < bottom) {
-      bottom = Math.min(bottom, nodes[i].y + nodes[i].height); row.push(nodes[i++])
+  const solve = async (root: ElkNode) => {
+    // Compound containers do not inherit ELK spacing/layer placement. Apply the
+    // same compact policy at every depth, including each candidate's layer cap.
+    const options = Object.fromEntries(Object.entries(root.layoutOptions!).filter(([key]) =>
+      key.includes("spacing.") || key.includes("layered.layering.") || key.includes("nodePlacement.")
+      || key === "elk.direction" || key === "elk.nodeLabels.padding"))
+    const visit = (parent: ElkNode) => {
+      for (const child of parent.children ?? []) if (child.children) {
+        Object.assign(child.layoutOptions!, options, { "elk.padding": "[top=4,left=2,bottom=2,right=2]" })
+        visit(child)
+      }
     }
-    reading.push(...row.sort((a, b) => a.x - b.x))
+    visit(root)
+    const result = await solveLayout(root)
+    const widths = new Map<string, number>()
+    const collect = (box: ElkNode) => { widths.set(box.id, box.width ?? 0); box.children?.forEach(collect) }
+    collect(result)
+    let padded = false
+    const fit = (box: ElkNode) => {
+      if (!box.children) return
+      const shortfall = Math.ceil((box.labels?.[0]?.width ?? -4) + 4 - widths.get(box.id)!)
+      if (shortfall > 0) {
+        box.layoutOptions!["elk.padding"] = `[top=4,left=2,bottom=2,right=${2 + shortfall}]`
+        padded = true
+      }
+      box.children.forEach(fit)
+    }
+    fit(root)
+    // Compound sizing ignores centered label minima. One bounded correction
+    // adds only the measured shortfall, without a speculative wide title lane.
+    return padded ? solveLayout(root) : result
   }
-  return { nodes: reading, edges, width: Math.ceil(result.width!), height: Math.ceil(result.height! / 2), ...(scene ? { scene } : {}) }
+  const project = (result: ElkNode): DiagramLayout => {
+    const placedNodes = nodes.map((box) => ({ ...box }))
+    const placedEdges = edges.map((edge) => ({ ...edge }))
+    const placedScene = scene ? emptyScene() : undefined
+    const boxes = new Map<string, ElkNode>()
+    const routedEdges = new Map<string, NonNullable<ElkNode["edges"]>[number]>()
+    const collect = (box: ElkNode, x = 0, y = 0) => {
+      const absolute = { ...box, x: x + (box.x ?? 0), y: y + (box.y ?? 0) }
+      boxes.set(box.id, absolute)
+      for (const edge of box.edges ?? []) routedEdges.set(edge.id, edge)
+      for (const child of box.children ?? []) collect(child, absolute.x, absolute.y)
+    }
+    collect(result)
+    for (const group of groups) {
+      const box = boxes.get(groupBoxes.get(group.id)!.id)!
+      placedScene!.regions.push({ x: round(box.x!), y: round(box.y! / 2), width: Math.ceil(box.width!), height: Math.ceil(box.height! / 2),
+        label: `${group.label} (${group.kind})`, style: "group" })
+    }
+    placedNodes.forEach((box, i) => {
+      const placed = boxes.get(`n${i}`)!
+      box.x = round(placed.x!); box.y = round(placed.y! / 2)
+      box.width = Math.ceil(placed.width!); box.height = Math.ceil(placed.height! / 2)
+    })
+    const port = (point: DiagramPoint, i: number, box: DiagramBox): { side: DiagramSide; point: DiagramPoint } => {
+      const raw = boxes.get(`n${i}`)!
+      const sides: Array<[DiagramSide, number]> = [["left", Math.abs(point.x - raw.x!)], ["right", Math.abs(point.x - raw.x! - raw.width!)],
+        ["top", Math.abs(point.y - raw.y!)], ["bottom", Math.abs(point.y - raw.y! - raw.height!)]]
+      const side = sides.sort((a, b) => a[1] - b[1])[0][0]
+      return { side, point: { x: side === "left" ? box.x - 1 : side === "right" ? box.x + box.width : round(point.x),
+        y: side === "top" ? box.y - 1 : side === "bottom" ? box.y + box.height : round(point.y / 2) } }
+    }
+    placedEdges.forEach((edge, i) => {
+      const routed = routedEdges.get(`e${i}`)
+      const section = routed?.sections?.[0]
+      if (!section || routed!.sections!.length !== 1) throw new Error("Diagram route unavailable")
+      const container = boxes.get(routed!.container ?? "root")!
+      const offset = (point: DiagramPoint) => ({ x: point.x + (container?.x ?? 0), y: point.y + (container?.y ?? 0) })
+      const from = index.get(edge.from)!; const to = index.get(edge.to)!
+      const start = port(offset(section.startPoint), from, placedNodes[from]); const end = port(offset(section.endPoint), to, placedNodes[to])
+      edge.sourceSide = start.side; edge.targetSide = end.side
+      edge.points = [start.point, ...(section.bendPoints ?? []).map(offset).map((p) => ({ x: round(p.x), y: round(p.y / 2) })), end.point]
+        .filter((p, j, all) => !j || p.x !== all[j - 1].x || p.y !== all[j - 1].y)
+      if (edge.points.length < 2 || edge.points.some((p, j, all) => !Number.isFinite(p.x + p.y)
+        || (j > 0 && p.x !== all[j - 1].x && p.y !== all[j - 1].y))) throw new Error("Diagram route is not orthogonal")
+      edge.direct = edge.points.length === 2 && edge.points[0].x === edge.points[1].x && edge.points[0].y < edge.points[1].y
+      if (edge.labelLines.length) {
+        edge.labelLines = routed!.labels![0].text!.split("\n")
+        edge.labelX = round(routed!.labels![0].x! + (container?.x ?? 0)); edge.labelY = round((routed!.labels![0].y! + (container?.y ?? 0)) / 2)
+      }
+    })
+    // Cards in one layer overlap vertically, but may be top-aligned or centered.
+    // Read that row left to right regardless of an expanded card's height.
+    placedNodes.sort((a, b) => a.y - b.y || a.x - b.x)
+    const reading: DiagramBox[] = []
+    for (let i = 0; i < placedNodes.length;) {
+      const row = [placedNodes[i++]]
+      let bottom = row[0].y + row[0].height
+      while (i < placedNodes.length && placedNodes[i].y < bottom) {
+        bottom = Math.min(bottom, placedNodes[i].y + placedNodes[i].height); row.push(placedNodes[i++])
+      }
+      reading.push(...row.sort((a, b) => a.x - b.x))
+    }
+    return simplifyDiagramRoutes({ nodes: reading, edges: placedEdges, width: Math.ceil(result.width!), height: Math.ceil(result.height! / 2), ...(placedScene ? { scene: placedScene } : {}) },
+      placedEdges.map((_, i) => {
+        const link = links.find(link => link.edge === i)
+        return { source: !!link?.fromPort, target: !!link?.toPort }
+      }))
+  }
+  // Bounded local search, still in the shared worker/cache and never an author
+  // request. Include the old geometry as a fallback; alternate labels must not
+  // trade away clearance after terminal rounding. No orientation changes.
+  let best = project(await solve(input))
+  let cost = diagramLayoutCost(best, columns)
+  const labelWidth = Math.max(8, Math.min(16, Math.floor(columns / 3)))
+  // Network-simplex placement is expensive for dense parallel/return routes.
+  // Keep those candidates on the baseline's fast placement algorithm rather
+  // than delaying native navigation for several seconds per candidate set.
+  const placementStrategy = edges.length > nodes.length * 4 ? "BRANDES_KOEPF" : "NETWORK_SIMPLEX"
+  for (const [placement, bound, strategy] of [["CENTER", 1, placementStrategy], ["HEAD", 1, placementStrategy],
+    ["TAIL", 1, placementStrategy], ["HEAD", 2, placementStrategy], ["CENTER", 1, "SIMPLE"], ["HEAD", 1, "SIMPLE"]] as const) {
+    const candidate = structuredClone(input)
+    Object.assign(candidate.layoutOptions!, { "elk.layered.layering.coffmanGraham.layerBound": String(bound),
+      "elk.layered.nodePlacement.strategy": strategy })
+    for (const [i, edge] of candidate.edges!.entries()) {
+      if (!edge.labels?.length) continue
+      const label = notationEdgeLabel(graph, i)
+      const lines = wrapDiagramText(`${edges[i].cycle && !notation ? "↺ " : ""}${label}`, labelWidth)
+      edge.labels = [{ text: lines.join("\n"), width: Math.max(...lines.map(diagramTextWidth)), height: lines.length * 2,
+        layoutOptions: { "elk.edgeLabels.placement": placement } }]
+    }
+    let result: ElkNode
+    try { result = await solve(candidate) }
+    catch { break } // Optional optimization cannot discard the successful route.
+    let layout: DiagramLayout
+    try { layout = project(result) }
+    catch { continue } // Some port/label combinations cannot survive cell snapping.
+    const next = diagramLayoutCost(layout, columns)
+    if (next < cost) { best = layout; cost = next }
+  }
+  return best
 }
 
 export type DiagramWireRun = { text: string; tone?: number }

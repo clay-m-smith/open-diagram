@@ -14,6 +14,9 @@ import { batch, createComponent, createSignal, Show } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 
 import { diagramTextWidth, diagramWireRuns, diagramWires, layoutDiagram, wrapDiagramText } from "../src/diagram/layout.js"
+import { diagramLayoutCost } from "../src/diagram/layout-quality.js"
+import { runtimeRouting, encoderRouting } from "./fixtures/routing.js"
+import { simplifyDiagramRoutes } from "../src/diagram/route-cleanup.js"
 import { ARROW_COLORS, diagramArrowColor } from "../src/diagram/arrow-colors.js"
 import { notationFixtures } from "./fixtures/notations.js"
 import { type DiagramGraph, type DiagramState, initialState } from "../src/diagram/schema.js"
@@ -161,9 +164,11 @@ if (!process.execArgv.includes("--conditions=browser")) {
     assert.deepEqual(identities(await layoutDiagram(graph, { columns: 100, selected: "b", sourceControl: true })), identities(base))
     assert.deepEqual(identities(await layoutDiagram({ ...graph, edges: [...graph.edges].reverse() })), identities(base))
     const pixels = diagramWireRuns(base).flatMap((run) => [...run.text].map((text) => ({ text, tone: run.tone })))
-    const direct = base.edges.find((edge) => edge.direct)!
-    const tip = direct.points.at(-1)!
-    assert.deepEqual(pixels[tip.y * (base.width + 1) + tip.x], { text: "▼", tone: direct.tone })
+    const arrow = base.edges[0]
+    const tip = arrow.points.at(-1)!
+    assert.deepEqual(pixels[tip.y * (base.width + 1) + tip.x], {
+      text: { top: "▼", bottom: "▲", left: "▶", right: "◀" }[arrow.targetSide], tone: arrow.tone,
+    }, "arrow hue survives bent as well as direct compact routes")
     for (let tone = 0; tone < ARROW_COLORS.length; tone++) assert.notEqual(diagramArrowColor(tone), diagramArrowColor(tone, true))
     assert.deepEqual(graph, original, "color assignment never mutates accepted graph")
   })
@@ -172,7 +177,8 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const fork = { ...graph, edges: [{ from: "a", to: "b", label: "next" }, { from: "a", to: "c", label: "branch" }, { from: "a", to: "d", label: "skip" }] }
     const compact = await layoutDiagram(fork, { columns: 38 })
     const wide = await layoutDiagram(fork, { columns: 140 })
-    assert.ok(compact.height > wide.height, "wider viewport can show parallel branches instead of forced single column")
+    assert.ok(wide.height <= compact.height, "more width need not force extra rows")
+    assert.ok(compact.width <= 38 && wide.width <= 38, "small forks stay compact instead of spreading to fill a wide viewport")
     const root = wide.nodes.find((box) => box.node.id === "a")!
     assert.ok(wide.nodes.filter((box) => box.node.id !== "a").every((box) => box.y > root.y + root.height), "flow remains vertical, not left-to-right")
     const loop = await layoutDiagram(graph, { columns: 140 })
@@ -206,6 +212,75 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const latest = layoutDiagram(fork, { columns: 140, selected: "b" })
     await Promise.all([pending, latest])
     assert.deepEqual((await latest).nodes.map((box) => box.node.id), wide.nodes.map((box) => box.node.id), "expansion preserves layer reading order")
+  })
+
+  test("long branch labels wrap into a compact downward view rather than adjacent wide lanes", async () => {
+    const labeled = { ...graph, nodes: graph.nodes.map((node, i) => ({ ...node, label: `Stage ${i}`, status: "observed" as const })), edges: [
+      { from: "a", to: "b", label: "normalized feature representation" },
+      { from: "a", to: "c", label: "configured model inference results" },
+      { from: "b", to: "d", label: "samples" }, { from: "c", to: "d", label: "samples" },
+    ] }
+    const original = structuredClone(labeled)
+    const compact = await layoutDiagram(labeled, { columns: 38 })
+    assert.ok(compact.width <= 38, "previous 46-column label lanes overflowed a 38-column viewport")
+    assert.ok(compact.height <= 44, "compactness must not become an unnecessarily tall single column")
+    assert.ok(compact.edges.every((edge) => edge.sourceSide === "bottom" && edge.targetSide === "top"), "keep forward flow downward")
+    const wires = diagramWires(compact).split("\n")
+    for (const edge of compact.edges) {
+      assert.equal(edge.labelLines.join("").replace(/\s/g, ""), edge.label.replace(/\s/g, ""), "wrapping preserves the entire label")
+      for (const [i, line] of edge.labelLines.entries()) {
+        assert.equal(wires[edge.labelY + i].slice(edge.labelX, edge.labelX + diagramTextWidth(line)).trim(), "", "labels stay off arrow paths")
+      }
+    }
+    assert.deepEqual(labeled, original, "reflow never rewrites accepted graph data")
+  })
+
+  test("layout objective penalizes crossings and shared wire lengths, and rejects obscured labels", async () => {
+    const base = await layoutDiagram(graph)
+    const edge = base.edges[0]
+    const make = (points: { x: number; y: number }[][]): Awaited<ReturnType<typeof layoutDiagram>> => ({ nodes: [], width: 20, height: 20,
+      edges: points.map((points) => ({ ...edge, points, labelLines: [], labelX: 0, labelY: 0 })) })
+    const separated = make([[{ x: 2, y: 2 }, { x: 2, y: 12 }], [{ x: 4, y: 10 }, { x: 14, y: 10 }]])
+    const crossing = make([[{ x: 8, y: 2 }, { x: 8, y: 12 }], [{ x: 4, y: 10 }, { x: 14, y: 10 }]])
+    const shared = make([[{ x: 8, y: 2 }, { x: 8, y: 12 }], [{ x: 8, y: 2 }, { x: 8, y: 12 }]])
+    assert.ok(diagramLayoutCost(crossing, 38) > diagramLayoutCost(separated, 38), "crossings cost more than equally short disjoint routes")
+    assert.ok(diagramLayoutCost(shared, 38) > diagramLayoutCost(crossing, 38), "coincident edge lengths are not free compaction")
+    const elbow = make([[{ x: 2, y: 2 }, { x: 2, y: 12 }, { x: 12, y: 12 }]])
+    const stairs = make([[{ x: 2, y: 2 }, { x: 2, y: 6 }, { x: 6, y: 6 }, { x: 6, y: 12 }, { x: 12, y: 12 }]])
+    assert.ok(diagramLayoutCost(stairs, 38) > diagramLayoutCost(elbow, 38), "equal dimensions and length must favor fewer turns")
+    crossing.edges[1] = { ...crossing.edges[1], labelLines: ["label"], labelX: 6, labelY: 4 }
+    assert.equal(diagramLayoutCost(crossing, 38), Infinity, "narrowing may not hide an unrelated wire beneath text")
+  })
+
+  test("skip and feedback routes lose gratuitous bends without widening cards or losing arrow approaches", async () => {
+    for (const [fixture, selected, columns, width, maxBends] of [[runtimeRouting, "n6", 88, 55, 14], [runtimeRouting, "n6", 38, 46, 16], [encoderRouting, undefined, 88, 59, 2]] as const) {
+      const original = structuredClone(fixture)
+      const layout = await layoutDiagram(fixture, { columns, selected })
+      assert.ok(layout.width <= width, "simpler routing must not buy wider empty lanes")
+      assert.ok(layout.edges.reduce((sum, e) => sum + e.points.length - 2, 0) <= maxBends, "reported shapes should not retain avoidable zigzags")
+      assert.ok(Number.isFinite(diagramLayoutCost(layout, 88)), "all labels/cards retain clearance")
+      for (const edge of layout.edges) {
+        for (const [p, q, side] of [[edge.points[0], edge.points[1], edge.sourceSide], [edge.points.at(-1)!, edge.points.at(-2)!, edge.targetSide]] as const) {
+          assert.ok(side === "top" ? p.x === q.x && q.y < p.y : side === "bottom" ? p.x === q.x && q.y > p.y
+            : side === "left" ? p.y === q.y && q.x < p.x : p.y === q.y && q.x > p.x, "arrow must have an intact, correctly oriented approach")
+        }
+      }
+      assert.deepEqual(fixture, original)
+      assert.equal(layout.edges.length, fixture.edges.length)
+    }
+    const node = runtimeRouting.nodes[0]
+    const mixed = { width: 16, height: 20, nodes: [
+      { node: { ...node, id: "a" }, x: 2, y: 1, width: 10, height: 3, lines: [] },
+      { node: { ...node, id: "b" }, x: 2, y: 14, width: 10, height: 3, lines: [] },
+    ], edges: [{ from: "a", to: "b", label: "", cycle: false, direct: false, tone: 0, labelLines: [], labelX: 0, labelY: 0,
+      sourceSide: "bottom" as const, targetSide: "top" as const, points: [{ x: 4, y: 4 }, { x: 4, y: 8 }, { x: 9, y: 8 }, { x: 9, y: 13 }] }] }
+    for (const source of [true, false]) {
+      const result = simplifyDiagramRoutes(structuredClone(mixed), [{ source, target: !source }])
+      assert.equal(result.edges[0].points.length, 2, "unnamed end can align even when the other end is named")
+      assert.deepEqual(source ? result.edges[0].points[0] : result.edges[0].points.at(-1), source ? mixed.edges[0].points[0] : mixed.edges[0].points.at(-1), "named endpoint stays fixed")
+    }
+    const fixed = simplifyDiagramRoutes(structuredClone(mixed), [{ source: true, target: true }])
+    assert.deepEqual([fixed.edges[0].points[0], fixed.edges[0].points.at(-1)], [mixed.edges[0].points[0], mixed.edges[0].points.at(-1)])
   })
 
   test("monitor scopes events and initial snapshots; switches abort and reject obsolete responses", async (t) => {
@@ -674,7 +749,9 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env
     const result = spawnSync(process.execPath, [
       "--experimental-ffi", "--conditions=browser", "--import", "tsx", "--test", fileURLToPath(import.meta.url),
-    ], { encoding: "utf8", timeout: 30_000, env })
+    // Whole interaction traversal, not a single solve. Each layout still has its
+    // own 5-second deadline below; allow headroom when suites share the runner.
+    ], { encoding: "utf8", timeout: 60_000, env })
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
     assert.match(result.stdout, /tests 1\b/)
   })
@@ -920,6 +997,21 @@ if (!process.execArgv.includes("--conditions=browser")) {
     for (const label of ["Model", "Files", "Classic sidebar", "Overview", "Granular", "Pause", "Refresh", "Fullscreen", "Close", "PNG", "SVG", "Save", "Theme: System"]) {
       assert.ok(narrowHeader.includes(`[${label}]`), `narrow toolbar keeps ${label} whole and reachable`)
     }
+    const beforeWrapped = states.get(alpha.id)!
+    const wrappedGraph = { ...notationFixtures.architecture,
+      title: "Convolution stem and transformer encoder with complete title",
+      summary: "Validated inputs pass through convolution stages and position encoding before transformer blocks and final normalization.",
+    }
+    const warning = "Diagram repair timed out within the configured generation budget; previous validated diagram remains available. Refresh to retry."
+    emit({ ...beforeWrapped, graph: wrappedGraph, views: [{ id: "model", label: "Model", graph: wrappedGraph }], updateError: warning, stale: true })
+    await flush()
+    const wrappedFrame = rendered.captureCharFrame().replace(/[\s█]/g, "")
+    for (const text of [warning, wrappedGraph.title, wrappedGraph.summary]) {
+      assert.ok(wrappedFrame.includes(text.replace(/\s/g, "")), `narrow panel wraps complete warning, title and summary instead of clipping: ${text}\n${rendered.captureCharFrame()}`)
+    }
+    assert.equal(readCount, 1, "cached text wrapping needs no RPC or generation")
+    emit(beforeWrapped)
+    await flush()
     const narrowRows = narrowHeader.split("\n")
     const narrowFull = narrowRows.findIndex((line) => line.includes("[Fullscreen]"))
     await rendered.mockMouse.click(narrowRows[narrowFull].indexOf("[Fullscreen]") + 2, narrowFull)
@@ -953,7 +1045,8 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const spans = () => rendered.captureSpans().lines.flatMap((line) => line.spans)
     const labelColor = (label: string) => spans().find((span) => span.text.trim() === label)!.fg.toInts().slice(0, 3)
     assert.notDeepEqual(labelColor("left"), labelColor("right"), "native branch labels have distinct colors")
-    assert.deepEqual(spans().find((span) => span.text.includes("▼"))!.fg.toInts().slice(0, 3), labelColor("left"), "native arrowhead matches its label")
+    assert.ok(spans().some(span => /[▼▲◀▶]/.test(span.text) && span.fg.toInts().slice(0, 3).every((value, i) => value === labelColor("left")[i])),
+      "native arrowhead matches its label independently of which routed arrow appears first")
     const leftTone = (await layoutDiagram(graph)).edges[0].tone
     assert.deepEqual(labelColor("left"), RGBA.fromHex(diagramArrowColor(leftTone, true)).toInts().slice(0, 3))
     setThemeText(RGBA.fromHex("#172033"))
@@ -1283,6 +1376,8 @@ if (!process.execArgv.includes("--conditions=browser")) {
       ...Array.from({ length: 40 }, (_, index) => ({ from: "cc", to: "aa", label: `route ${index}` }))] }
     emit(nativeReady(beta.id, 4, dense))
     await flush()
+    const firstRow = rendered.captureCharFrame().split("\n").find(line => line.includes("𠮷"))!
+    assert.ok(firstRow && firstRow.indexOf("𠮷") <= 4, "overflowing diagrams open with first block against the left viewport edge")
     const denseLayout = await layoutDiagram(dense, { columns: 80 })
     assert.ok(denseLayout.width > 80)
     assert.ok(denseLayout.nodes.every((box) => box.width <= 34), "dense ports do not stretch compact cards")
@@ -1302,6 +1397,13 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const revealed = await rendered.waitForFrame((frame) => (frame.match(/𠮷/gu) ?? []).length === 10)
     assert.equal((revealed.match(/𠮷/gu) ?? []).length, 10, "keyboard reveals horizontally panned card even when selection stays at first node")
     assert.match(rendered.captureCharFrame(), /Raw inputs/)
+    const restoredPan = rendered.captureCharFrame()
+    for (let tick = 0; tick < 3; tick++) await rendered.mockMouse.scroll(4, 0, "down", { modifiers: { shift: true } })
+    await flush()
+    assert.notEqual(rendered.captureCharFrame(), restoredPan, "Shift-wheel over toolbar pans graph, not toolbar or vertical content")
+    assert.equal(rendered.captureCharFrame().split("\n")[0], restoredPan.split("\n")[0])
+    await run("k")
+    await rendered.waitForFrame(frame => (frame.match(/𠮷/gu) ?? []).length === 10)
     rendered.resize(140, 50)
     setPanelWidth(140)
     await flush()

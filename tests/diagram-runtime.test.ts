@@ -2,6 +2,16 @@ import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import test from "node:test"
 
+test("native cancellation stops provider work before queued diagrams proceed", { timeout: 30000 }, () => {
+  const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env
+  const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/test-diagram-cancellation.mjs"], { env, encoding: "utf8", timeout: 25000 })
+  assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`)
+  assert.match(result.stdout, /native timeout closes provider socket and releases queued successor/)
+  assert.match(result.stdout, /native repair shares deadline and reports its stage/)
+  assert.match(result.stdout, /native citation-only repair publishes fully validated diagram/)
+  assert.match(result.stdout, /native Pause cancels active provider work without a spurious timeout/)
+})
+
 test("live diagrams follow actual OpenCode V2 prompt and native edit hooks through RPC", { timeout: 65_000 }, () => {
   const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env
   const result = spawnSync(process.execPath, ["--conditions=browser", "--import", "tsx", "scripts/test-live-diagram.mjs"], { env, encoding: "utf8", timeout: 60_000 })

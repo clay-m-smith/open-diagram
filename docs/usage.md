@@ -18,6 +18,10 @@ Controls wrap on narrow panels; long captions use grapheme-safe ellipsis.
 - `/open-diagram export-theme` selects System, Dark, or Light for images only.
 - In a focused panel: `j/k` select, `f` fullscreen, `p` pause/resume, `r` refresh,
   and `Escape` returns to the Classic sidebar.
+- Horizontal wheel/touchpad events pan the diagram; Shift-wheel also pans.
+  In the expanded panel this works over the toolbar as well as the graph. In the
+  native sidebar, point at the graph. The terminal must forward mouse events;
+  the plugin cannot recover gestures intercepted by the terminal or OS.
 
 Select a block to show its short description and functional explanation.
 **Sources** separately reveals file/context references, including related
@@ -30,16 +34,50 @@ scrolling, and resizing. No private host layout state is modified.
 
 ## Layout and notation
 
-Cards fit their contents. Generic graphs use ELK.js with a top-to-bottom bias and
-useful width for parallel branches. Cycles, disconnected nodes, branches and joins
-remain explicit. Width is a preference, not a clipping constraint; wide diagrams
-can scroll horizontally. Keyboard navigation follows visual reading order.
-Sequence and timing views preserve declared participant/signal order instead.
+View names describe their subject. Repository structure shows observed directory,
+package, or subsystem containment, with files/modules inside those boundaries—not
+a chain of recently touched source and test files. Imports, test coverage, and
+runtime interactions belong in accurately named separate views. Partial evidence
+must be identified as partial; unobserved repository contents are not invented.
+Incremental updates can correct both a misleading caption and its structure while
+retaining stable view IDs and unchanged grounded content.
+Tabs prioritize the current system, model, or pipeline being developed, followed
+by useful internals and supporting views. Research wrap-up or training recovery
+should not displace the system it supports; old architectures should not remain
+primary merely because an older README was reread. Explicit process-focused work
+can still use a workflow view. Compacted context supplies historical orientation,
+not proof that a proposal is implemented.
+Descriptions favor a short scope sentence and purpose phrase, with one compact
+expanded explanation. Essential parameters and caveats remain; brevity targets
+do not tighten the published schema or truncate accepted cached content.
+
+Cards fit their contents. Generic graphs compare a bounded set of downward ELK.js
+layouts, balancing area and viewport overflow against wire length, bends, crossings and
+shared routes, tolerating a couple of crossings instead of wide empty lanes.
+Compound group titles reserve a header rather than an empty left column.
+Arrow labels can wrap vertically and move along their own edges
+instead of forcing adjacent wide label columns. Alternate layouts that obscure
+cards or labels are rejected; if optimization fails, the original route remains.
+Local shortcuts remove unnecessary zigzags without enlarging the candidate canvas
+or moving cards. Unnamed ports may align within their existing card side; named
+architecture ports remain fixed. Arrowheads retain a straight approach, and labels
+stay beside their own routes, clear of cards and other wires.
+Cycles, disconnected nodes, branches and joins remain explicit. Width is a
+preference, not a clipping constraint: dense graphs can still scroll horizontally.
+Wide diagrams open on the first block at the left edge; smaller diagrams are not
+centered across the panel. Panning still reaches the complete routed graph.
+Keyboard navigation follows visual reading order. Sequence labels use local,
+wrapped gaps rather than widening every participant slot. Sequence and timing
+views preserve declared participant/signal order; timing axes do not stretch just
+to fill a wider viewport.
 
 Connections match line, label and arrowhead hues, adapting to light/dark themes.
 Eight hues are reused for dense graphs. Terminal crossings use vertical overpasses;
 legacy shared trunks and merged arrowheads remain neutral. Circuit connectivity
 is separate: only declared pin/net membership establishes a junction.
+Architecture connectors are solid, including dependencies (identified in their
+labels). Group outlines are solid and subdued. UML dependencies/realizations and
+sequence returns retain their notation-specific dashed strokes.
 
 Flow/state roles use compact badges on cards. Sequence fragments label message
 spans, not full UML alternative operands. Timing is event-spaced and **not to

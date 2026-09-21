@@ -32,8 +32,11 @@
     "docs:check": "node --import tsx scripts/render-readme.mjs --check"
   },
   "dependencies": {
+    "@opencode/ai": "2.0.7",
     "@opencode/plugin": "2.0.7",
+    "@opencode/schema": "2.0.7",
     "@resvg/resvg-js": "2.6.2",
+    "effect": "4.0.0-rc.112",
     "elkjs": "0.12.0",
     "string-width": "7.2.0",
     "zod": "4.1.8"

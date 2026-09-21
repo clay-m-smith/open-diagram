@@ -156,9 +156,11 @@ test("author namespace change cannot carry untouched views into new namespace", 
     let calls = 0
     let subset: { views: DiagramView[] } | undefined
     engine = new DiagramEngine({ ...deps, cacheNamespace: "new", analyze: async (_e, _p, _f, _s, _d, update) => {
+      assert.equal(_p, null, "invalidated first tab must not prime the new policy with an obsolete model")
       calls++; subset = update
       return { relevant: true, reason: "new", graph: views[0].graph, views }
     } })
+    assert.deepEqual((await engine.get("a")).views, views, "old accepted output remains available while policy is re-evaluated")
     await engine.observe("a", [{ ...data[0], text: "Architecture changed" }, data[1]])
     await until(() => calls === 1)
     assert.equal(subset, undefined, "namespace changes require all views, even alongside one changed dependency")

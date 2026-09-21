@@ -6,17 +6,21 @@ import { DiagramEngine } from "./engine.js"
 import { DiagramRpc } from "./schema.js"
 import { diagramRequest } from "./harness.js"
 import { registerDiagramTools } from "./tools.js"
+import { registerNativeAuthor } from "./native.js"
 
 /** Independent plugin: no provider/agent transforms or offload integration. */
 export function generationNamespace(config: DiagramConfig) {
-  return digest(JSON.stringify([3, config.backend, config.providerID, config.model, config.variant, config.baseURL,
+  // Authoring policy revision: re-evaluate pre-policy accepted views on the next
+  // observation, without clearing the last-good diagram or changing its schema.
+  return digest(JSON.stringify([5, config.backend, config.providerID, config.model, config.variant, config.baseURL,
     config.responseFormat, config.maxTokens, config.thinkingBudget, config.enableThinking, config.cachePrompt]))
 }
-export function defineDiagramPlugin(defaults: Record<string, unknown>) {
+export function defineDiagramPlugin(defaults: Record<string, unknown>, nativeAuthor = registerNativeAuthor) {
   return Plugin.define({
     id: "open-diagram-server",
     async setup(ctx) {
       const config = ConfigSchema.parse({ ...defaults, ...ctx.options })
+      const native = config.backend === "opencode" ? await nativeAuthor(ctx) : undefined
       const abort = new AbortController()
       type Collector = { timer?: ReturnType<typeof setTimeout>; running?: Promise<void>; again: boolean; refresh: boolean; retryBlockedKey?: string }
       const collectors = new Map<string, Collector>()
@@ -28,12 +32,13 @@ export function defineDiagramPlugin(defaults: Record<string, unknown>) {
       const engine = new DiagramEngine({
         ...config,
         cacheNamespace: generationNamespace(config),
-        analyze: config.backend === "manual" ? undefined : createDiagramClient(config, fetch, (input, options) => ctx.generate.text(input, options)),
+        analyze: config.backend === "manual" ? undefined : createDiagramClient(config, fetch, native?.generate),
         load: (sessionID) => ctx.storage.get(key(sessionID)),
         save: (sessionID, state) => ctx.storage.set(key(sessionID), state),
         publish: (state) => publish(state),
       })
       const localSession = async (sessionID: string, signal = abort.signal) => {
+        if (native?.owns(sessionID)) throw new Error("Managed diagram author has no diagram panel")
         const session = await ctx.session.get({ sessionID }, { signal })
         // SessionInfo exposes PublicRef (directory only), not transport workspaceID.
         // Workspace routing belongs to the host; additionally bind to public project identity.
@@ -72,6 +77,7 @@ export function defineDiagramPlugin(defaults: Record<string, unknown>) {
         }
       }
       const queue = (sessionID: string, refresh = false, retryBlockedKey?: string): boolean => {
+        if (native?.owns(sessionID)) return true
         if (abort.signal.aborted) return false
         const existing = collectors.get(sessionID)
         if (existing) { if (refresh) existing.retryBlockedKey = retryBlockedKey; existing.refresh ||= refresh; if (existing.running) existing.again = true; return true }

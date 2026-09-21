@@ -31,8 +31,8 @@ export function materialEvidence(evidence: readonly Evidence[]): Evidence[] {
   const requests = evidence.filter((item) => item.category === "request")
   // Non-code domains and inventory-only sessions still have an authoring path.
   const files = new Set(material.map((item) => item.file).filter(Boolean))
-  return material.length ? evidence.filter((item) => material.includes(item) || (item.file && files.has(item.file)))
-    : requests.length ? requests : evidence.filter((item) => item.category !== "assistant")
+  return material.length ? evidence.filter((item) => material.includes(item) || item.category === "context" || (item.file && files.has(item.file)))
+    : requests.length ? evidence.filter(item => item.category === "request" || item.category === "context") : evidence.filter((item) => item.category !== "assistant")
 }
 export function evidenceFingerprints(evidence: readonly Evidence[]): Record<string, string> {
   const material = materialEvidence(evidence)
@@ -57,11 +57,14 @@ export function fingerprintKey(fingerprints: Record<string, string>, depth: Diag
 }
 
 /** Only known, changed source dependencies can safely narrow an update. */
-export function affectedViews(previous: AcceptedDiagram, evidence: readonly Evidence[]): DiagramView[] {
+export function affectedViews(previous: AcceptedDiagram, evidence: readonly Evidence[], options: { knownOnly?: boolean } = {}): DiagramView[] {
   const next = evidenceFingerprints(evidence)
   const before = previous.fingerprints
   const changed = new Set([...new Set([...Object.keys(before), ...Object.keys(next)])].filter((id) => before[id] !== next[id]))
   const views = previous.analysis.views
+  // Unknown scope must allow new views. Known edits can patch even a single view
+  // or every existing view, not only a strict subset of a multi-view diagram.
+  const full = options.knownOnly ? [] : views
   // Native mutations affect a file, not merely the read at its default offset.
   const mutatedFiles = new Set(evidence.filter((item) => changed.has(item.id) && item.mutation && item.file).map((item) => item.file))
   const knownMutation = (id: string) => {
@@ -70,8 +73,8 @@ export function affectedViews(previous: AcceptedDiagram, evidence: readonly Evid
       && views.some((view) => diagramEvidence(view.graph).includes(item.id)))
   }
   for (const item of evidence) if (item.file && mutatedFiles.has(item.file)) changed.add(item.id)
-  if ([...changed].some((id) => (!before[id] && !knownMutation(id)) || !next[id] || evidence.find((item) => item.id === id)?.category === "request")) return views
+  if ([...changed].some((id) => (!before[id] && !knownMutation(id)) || !next[id] || ["request", "context"].includes(evidence.find((item) => item.id === id)?.category ?? ""))) return full
   // A changed source not cited by any existing view can introduce structure.
-  if ([...changed].some((id) => !knownMutation(id) && !views.some((view) => diagramEvidence(view.graph).includes(id)))) return views
+  if ([...changed].some((id) => !knownMutation(id) && !views.some((view) => diagramEvidence(view.graph).includes(id)))) return full
   return views.filter((view) => diagramEvidence(view.graph).some((id) => changed.has(id)))
 }

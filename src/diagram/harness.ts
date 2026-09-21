@@ -20,6 +20,11 @@ export function diagramOutputSchema(options: { strict?: boolean } = {}) {
   })
 }
 
+/** Native result-tool schema; identical validators, reusable schema definitions. */
+export function nativeDiagramOutputSchema() {
+  return z.toJSONSchema(ViewAnalysisSchema, { reused: "ref" })
+}
+
 export function diagramRequest(evidence: readonly Evidence[], previous: DiagramGraph | null, forced: boolean, granularity: DiagramGranularity = "overview") {
   return {
     version: HARNESS_VERSION,
@@ -29,24 +34,53 @@ export function diagramRequest(evidence: readonly Evidence[], previous: DiagramG
   }
 }
 
+export type DiagramIssue = { path: (string | number)[]; problem: string }
 export class DiagramOutputError extends Error {
-  constructor(readonly code: "json" | "schema" | "citation", message: string) { super(message) }
+  constructor(readonly code: "json" | "schema" | "citation", message: string, readonly issues: DiagramIssue[] = []) { super(message) }
+}
+
+export function parseDiagramJSON(text: string): unknown {
+  const raw = text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/, "$1")
+  let failure: unknown
+  try { return JSON.parse(raw) } catch (error) { failure = error }
+  // V8 and JavaScriptCore describe syntax errors differently. Classify only;
+  // raw parser messages can contain source text and must never reach the UI.
+  const message = failure instanceof Error ? failure.message : ""
+  const position = /position (\d+)/.exec(message)?.[1]
+  const syntax = /unterminated|unexpected end/i.test(message) ? "incomplete"
+    : /escape|unicode/i.test(message) ? "escape"
+    : /expected.*:|after property name/i.test(message) ? "colon"
+    : /property name|property names/i.test(message) ? "property"
+    : /expected.*[,}\]]|after property value|array element/i.test(message) ? "separator"
+    : "syntax"
+  throw new DiagramOutputError("json", `Diagram response is not valid JSON (${syntax}; ${raw.length} chars)${position ? ` at character ${position}` : ""}`)
 }
 
 /** Validate any model's output without executing it or exposing source text in errors. */
 export function parseDiagramOutput(text: string, evidence: readonly Evidence[]): DiagramViewAnalysis {
-  let value: unknown
-  try { value = JSON.parse(text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/, "$1")) }
-  catch { throw new DiagramOutputError("json", "Diagram response is not valid JSON") }
-  return validateDiagramOutput(value, evidence)
+  return validateDiagramOutput(parseDiagramJSON(text), evidence)
+}
+
+function diagramIssue(issue: z.core.$ZodIssue): DiagramIssue {
+  // Never echo received values, unknown property names, or raw validator messages.
+  const problem = issue.code === "invalid_type" ? `expected ${issue.expected}`
+    : issue.code === "unrecognized_keys" ? "unexpected fields"
+    : issue.code === "too_small" ? `minimum ${issue.minimum}`
+    : issue.code === "too_big" ? `maximum ${issue.maximum}`
+    : issue.code === "invalid_value" ? "unsupported value"
+    : issue.code === "invalid_format" ? "invalid text format"
+    : issue.code === "custom" && issue.params?.diagramRule === true ? issue.message
+    : "inconsistent structure or references"
+  return { path: issue.path.map((part) => typeof part === "number" ? part : String(part).replace(/[^\w-]/g, "").slice(0, 50)), problem }
 }
 
 export function validateDiagramOutput(value: unknown, evidence: readonly Evidence[]): DiagramViewAnalysis {
   const multiple = ViewAnalysisSchema.safeParse(value)
   const legacy = multiple.success ? undefined : AnalysisSchema.safeParse(value)
   if (!multiple.success && !legacy?.success) {
-    const paths = multiple.error.issues.slice(0, 3).map((issue) => issue.path.join(".").replace(/[^\w.\[\]-]/g, "")).join(", ")
-    throw new DiagramOutputError("schema", `Invalid diagram schema${paths ? `: ${paths}` : ""}`)
+    const issues = multiple.error.issues.map(diagramIssue)
+    const details = issues.slice(0, 3).map((issue) => `${issue.path.join(".") || "root"} (${issue.problem})`).join(", ")
+    throw new DiagramOutputError("schema", `Invalid diagram schema: ${details}`, issues)
   }
   const analysis: DiagramViewAnalysis = multiple.success ? multiple.data : {
     relevant: legacy!.data!.relevant, reason: legacy!.data!.reason,

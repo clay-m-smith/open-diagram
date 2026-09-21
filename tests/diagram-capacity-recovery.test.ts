@@ -55,7 +55,8 @@ test("capacity admission delayed across healthy recollection cannot invalidate n
     rpc: { register: async (_rpc: unknown, handlers: unknown) => { methods = handlers; return { events: { emit: async () => {} } } } },
     storage: { get: async () => undefined, set: async () => {} }, event: { async *subscribe() {} },
   }
-  const cleanup = await defineDiagramPlugin({ backend: "opencode", providerID: "fixture", model: "fixture", intervalMs: 1000, debounceMs: 500 }).setup(ctx as unknown as Plugin.Context)
+  const cleanup = await defineDiagramPlugin({ backend: "opencode", providerID: "fixture", model: "fixture", intervalMs: 1000, debounceMs: 500 },
+    async () => ({ generate: ctx.generate.text, owns: () => false })).setup(ctx as unknown as Plugin.Context)
   const request = { signal: new AbortController().signal }
   try {
     await methods.snapshot({ sessionID: "a" }, request)

@@ -473,18 +473,27 @@ export class DiagramEngine {
     try {
       const previous = entry.memo.entries.find((item) => item.granularity === entry.state.granularity
         && item.key === fingerprintKey(item.fingerprints, item.granularity, this.deps.cacheNamespace))
-      const affected = previous ? affectedViews(previous, evidence) : undefined
+      const affected = previous ? affectedViews(previous, evidence, { knownOnly: true }) : undefined
       const currentIDs = new Set(evidence.map((item) => item.id))
-      const targeted = affected?.length && previous && affected.length < previous.analysis.views.length
+      const targeted = affected?.length && previous
         && previous.analysis.views.every((view) => affected.some((item) => item.id === view.id)
            || diagramEvidence(view.graph).every((id) => currentIDs.has(id))) ? affected : undefined
       const selectedIDs = new Set(targeted?.flatMap((view) => diagramEvidence(view.graph)))
       const selectedFiles = new Set(evidence.filter((item) => selectedIDs.has(item.id) && item.file).map((item) => item.file))
-      const input = targeted ? evidence.filter((item) => selectedIDs.has(item.id) || (item.file && selectedFiles.has(item.file)) || item.category === "request") : evidence
+       const input = targeted ? evidence.filter((item) => selectedIDs.has(item.id) || (item.file && selectedFiles.has(item.file)) || item.category === "request" || item.category === "context") : evidence
       const maxNodes = 48 - (previous?.analysis.views.filter((view) => !targeted?.some((item) => item.id === view.id)).reduce((sum, view) => sum + view.graph.nodes.length, 0) ?? 0)
-      let analysis = await this.deps.analyze!(input, targeted?.[0]?.graph ?? entry.state.graph, entry.state.mode === "on", controller.signal, entry.state.granularity, targeted ? { views: targeted, maxNodes } : undefined)
+      const replaceAll = !!targeted && targeted.length === previous?.analysis.views.length
+      // Unknown scope still permits a complete replan, but need not force the
+      // author to reprint every unchanged node. Supply all cached views plus all
+      // current evidence; missing citations remain invalid until explicitly fixed.
+      const update = targeted ? { views: targeted, maxNodes, replaceAll }
+        : previous ? { views: previous.analysis.views, maxNodes: 48, replaceAll: true } : undefined
+       // An invalidated policy/depth baseline remains visible, not authoritative
+       // authoring context. Priming a cold replan with its first obsolete model
+       // can resurrect precisely the architecture the new policy must replace.
+       let analysis = await this.deps.analyze!(input, targeted?.[0]?.graph ?? previous?.analysis.views[0]?.graph ?? null, entry.state.mode === "on", controller.signal, entry.state.granularity, update)
       if (this.disposed || controller.signal.aborted || generation !== entry.generation) return
-      if (targeted && previous) {
+      if (targeted && previous && !replaceAll) {
         const updates = analysisViews(analysis)
         if (!analysis.relevant || updates.length !== targeted.length || updates.some((view) => !targeted.some((old) => old.id === view.id))) throw new Error("Invalid targeted diagram update; cached views retained")
         const views = previous.analysis.views.map((view) => updates.find((next) => next.id === view.id) ?? view)

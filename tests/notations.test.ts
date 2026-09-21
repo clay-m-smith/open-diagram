@@ -6,8 +6,9 @@ import { DiagramEngine } from "../src/diagram/engine.js"
 import { validateDiagramOutput } from "../src/diagram/harness.js"
 import { GraphSchema, type DiagramGraph, type DiagramView } from "../src/diagram/schema.js"
 import { notationEvidence, notationFixtures } from "./fixtures/notations.js"
-import { diagramWires, layoutDiagram } from "../src/diagram/layout.js"
+import { diagramTextWidth, diagramWires, layoutDiagram } from "../src/diagram/layout.js"
 import { sceneWireRuns } from "../src/diagram/scene.js"
+import { draftOutputSchema, expandDiagramDraft } from "../src/diagram/draft.js"
 
 const clone = <T>(value: T): T => structuredClone(value)
 const legacy = { title: "Legacy", summary: "No notation", nodes: [{ id: "old", label: "Old", kind: "service", detail: "", status: "observed" as const, evidence: ["e_design"] }], edges: [] }
@@ -21,6 +22,93 @@ test("eight notation families validate while legacy graphs remain byte-exact", (
     if (invalid === "unknown") value.notation.family = invalid
     else value.notation.version = 3
     assert.equal(GraphSchema.safeParse(value).success, false)
+  }
+})
+
+function draftGraph(fixture: DiagramGraph): any {
+  const graph: any = clone(fixture)
+  graph.defaults = { status: graph.nodes[0].status, evidence: [...graph.nodes[0].evidence] }
+  for (const node of graph.nodes) if (node.status === graph.defaults.status) delete node.status
+  const notation = graph.notation
+  if (notation) {
+    delete notation.version
+    for (const collection of ["steps", "states", "records"]) {
+      if (!notation[collection]) continue
+      for (const { node, ...annotation } of notation[collection]) graph.nodes.find((item: any) => item.id === node).annotation = annotation
+      delete notation[collection]
+    }
+    for (const collection of ["links", "branches", "transitions", "relationships"]) {
+      if (!notation[collection]) continue
+      for (const { edge, ...annotation } of notation[collection]) graph.edges[edge].annotation = annotation
+      delete notation[collection]
+    }
+  }
+  const inherit = (value: any) => {
+    if (!value || typeof value !== "object") return
+    if (JSON.stringify(value.evidence) === JSON.stringify(graph.defaults.evidence)) delete value.evidence
+    for (const item of Object.values(value)) if (Array.isArray(item)) item.forEach(inherit); else inherit(item)
+  }
+  inherit(graph.nodes); inherit(graph.edges); inherit(notation)
+  return graph
+}
+
+test("native drafts expand all families losslessly with explicit defaults and co-located annotations", () => {
+  const schema = draftOutputSchema(notationEvidence)
+  assert.deepEqual(schema.$defs.EvidenceIDs.items.enum, notationEvidence.map(item => item.id))
+  assert.equal(schema.properties.format.const, "draft")
+  assert.equal(schema.properties.views.items.properties.graph.properties.nodes.items.prefixItems.length, 6)
+  const rows = (draft: any) => ({ ...draft,
+    nodes: draft.nodes.map(({ id, label, kind, detail, behavior, ...overrides }: any) => [id, label, kind, detail, behavior ?? null, ...(Object.keys(overrides).length ? [overrides] : [])]),
+    edges: draft.edges.map(({ from, to, label, annotation }: any) => [from, to, label, ...(annotation ? [annotation] : [])]),
+  })
+  const read = (graph: any) => validateDiagramOutput(JSON.parse(expandDiagramDraft(JSON.stringify({ format: "draft", relevant: true, reason: "Fixture", views: [{ id: "diagram", label: "Diagram", graph }] }), notationEvidence)), notationEvidence).views[0].graph
+  for (const [family, fixture] of Object.entries({ ...notationFixtures, legacy })) {
+    const expected: DiagramGraph = clone(fixture)
+    if (expected.nodes.length > 1) expected.nodes[1].status = "planned"
+    const draft = draftGraph(expected)
+    const before = JSON.stringify(draft)
+    assert.deepEqual(read(draft), expected, family)
+    assert.deepEqual(read(rows(draft)), expected, `${family} fixed rows`)
+    const nullable = rows(draft)
+    for (const node of nullable.nodes) if (node.length === 5) node.push(null)
+    for (const edge of nullable.edges) if (edge.length === 3) edge.push(null)
+    assert.deepEqual(read(nullable), expected, "null optional row slots mean absent, without dropping required family annotations")
+    assert.equal(JSON.stringify(draft), before, "author input is not mutated")
+    const canonical = JSON.stringify({ relevant: true, reason: "Fixture", views: [{ id: "diagram", label: "Diagram", graph: fixture }] })
+    assert.equal(expandDiagramDraft(canonical, notationEvidence), canonical, "canonical compatibility is byte-exact")
+  }
+  const reordered = draftGraph(notationFixtures.architecture)
+  reordered.edges.reverse(); reordered.edges.pop()
+  const result = read(reordered)
+  assert.equal(result.edges[0].from, "plant")
+  assert.ok(result.notation?.family === "architecture")
+  assert.deepEqual(result.notation.links, [{ ...((notationFixtures.architecture.notation as any).links[1]), edge: 0 }], "annotation follows its own edge, not its old index")
+  for (const mutate of [
+    (g: any) => { delete g.defaults },
+    (g: any) => { g.defaults.extra = "unknown" },
+    (g: any) => { g.defaults.evidence = ["unknown"] },
+    (g: any) => {
+      g.defaults.evidence = ["unknown"]
+      for (const item of [...g.nodes, ...g.edges.map((edge: any) => edge.annotation), ...g.notation.groups, ...g.notation.ports]) item.evidence = ["e_design"]
+    },
+    (g: any) => { g.nodes[0].evidence = null },
+    (g: any) => { delete g.edges[0].annotation },
+    (g: any) => { g.edges[0].annotation = null },
+    (g: any) => { g.edges[0].annotation.edge = 0 },
+    (g: any) => { g.notation.links = [] },
+    (g: any) => { g.edges[0].annotation.fromPort = "force" },
+    (g: any) => { g.edges[0].annotation.extra = "unknown" },
+  ]) {
+    const draft = draftGraph(notationFixtures.architecture); mutate(draft)
+    assert.throws(() => read(draft), /Invalid diagram|outside current snapshot/, "draft expansion cannot guess missing metadata or bypass strict validation")
+  }
+  for (const mutate of [
+    (g: any) => { g.nodes[0].push({}, "extra") },
+    (g: any) => { g.nodes[0][5] = { id: "replacement" } },
+    (g: any) => { g.edges[0] = ["mcu", "plant"] },
+  ]) {
+    const draft = rows(draftGraph(notationFixtures.architecture)); mutate(draft)
+    assert.throws(() => read(draft), /Invalid diagram draft/, "positional input cannot silently discard extra fields or overwrite node identity")
   }
 })
 
@@ -97,6 +185,9 @@ test("specialized geometry preserves family semantics and bounded shared scene c
       assert.equal(diagramWires(layout).split("\n").length, layout.height, family)
       for (const box of layout.nodes) assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= layout.width && box.y + box.height <= layout.height)
       for (const text of layout.scene!.texts) assert.ok(text.x >= 0 && text.y >= 0 && text.y < layout.height)
+      for (const region of layout.scene!.regions.filter(region => region.style === "group")) {
+        assert.ok(region.width >= diagramTextWidth(region.label) + 4, "group title fits its region border")
+      }
       if (graph.notation?.family === "sequence") {
         assert.deepEqual(layout.nodes.map((box) => box.node.id), graph.notation.participants)
         const messages = layout.scene!.paths.filter((path) => path.owner.startsWith("message:"))
@@ -124,4 +215,51 @@ test("specialized geometry preserves family semantics and bounded shared scene c
   ], texts: [], regions: [], dots: [] }
   assert.equal(sceneWireRuns(crossed, 5, 5).map((run) => run.text).join("").split("\n")[2][2], "│", "crossing different nets cannot join")
   assert.equal(sceneWireRuns({ ...crossed, dots: [{ x: 2, y: 2, owner: "a" }] }, 5, 5).map((run) => run.text).join("").split("\n")[2][2], "●", "explicit junction remains visible")
+})
+
+test("sequence labels use local wrapped gaps and timing axes never stretch to viewport width", async () => {
+  const graph = clone(notationFixtures.sequence)
+  assert.ok(graph.notation?.family === "sequence")
+  graph.nodes.push({ ...graph.nodes[1], id: "sensor", label: "sensor" })
+  graph.notation.participants.push("sensor")
+  graph.notation.messages[0].label = "Read current sensor status and return the complete measurement payload"
+  const layout = await layoutDiagram(GraphSchema.parse(graph), { columns: 38 })
+  assert.ok(layout.width <= 50, "one long message must not widen every participant slot")
+  assert.deepEqual(layout.nodes.map((box) => box.node.id), graph.notation.participants)
+  const first = layout.scene!.paths.find((path) => path.owner === "message:poll1")!
+  const lines = layout.scene!.texts.filter((text) => text.y < first.points[0].y)
+  assert.equal(lines.map((line) => line.text).join(" "), graph.notation.messages[0].label, "long message remains complete")
+  assert.ok(lines.length > 1, "use vertical label space instead of horizontal stretching")
+  const wires = diagramWires(layout).split("\n")
+  for (const text of layout.scene!.texts) assert.equal(wires[text.y].slice(text.x, text.x + text.text.length).trim(), "", "labels avoid lifelines, messages and activations")
+  const narrow = await layoutDiagram(notationFixtures.timing, { columns: 38 })
+  const wide = await layoutDiagram(notationFixtures.timing, { columns: 140 })
+  assert.equal(wide.width, narrow.width, "more viewport space must not add an empty timing-axis tail")
+})
+
+test("compound architecture titles reserve header space, not empty left lanes or default layer gaps", async () => {
+  const nodes = Array.from({ length: 9 }, (_, i) => ({ ...legacy.nodes[0], id: `stage${i}`, label: `Stage ${i}` }))
+  for (const nested of [false, true]) {
+    const graph = GraphSchema.parse({ title: "Encoder", summary: "Grouped layer chain", nodes,
+      edges: nodes.slice(1).map((node, i) => ({ from: nodes[i].id, to: node.id, label: "stage features" })),
+      notation: { version: 2, family: "architecture", ports: [],
+        links: nodes.slice(1).map((_, edge) => ({ edge, fromPort: null, toPort: null, direction: "forward", role: "data", evidence: ["e_design"] })),
+        groups: [
+          { id: "encoder", label: "Encoder trunk", kind: "neural model", parent: nested ? "outer" : null, nodes: nodes.map(node => node.id), evidence: ["e_design"] },
+          ...(nested ? [{ id: "outer", label: "Model", kind: "container", parent: null, nodes: [], evidence: ["e_design"] }] : []),
+        ],
+      },
+    })
+    const before = clone(graph)
+    const layout = await layoutDiagram(graph, { columns: 38 })
+    assert.ok(layout.width <= (nested ? 42 : 38), "group label cannot become a wide empty column")
+    assert.ok(layout.nodes[0].x < 15 && layout.nodes[0].y < 10, "first card stays near the group header")
+    for (let i = 1; i < layout.nodes.length; i++) {
+      assert.ok(layout.nodes[i].y - layout.nodes[i - 1].y - layout.nodes[i - 1].height <= 10, "nested groups inherit compact edge spacing")
+    }
+    assert.equal(layout.edges.length, graph.edges.length)
+    assert.deepEqual(layout.scene!.regions.map(region => region.label), graph.notation!.family === "architecture"
+      ? graph.notation!.groups.map(group => `${group.label} (${group.kind})`) : [])
+    assert.deepEqual(graph, before)
+  }
 })

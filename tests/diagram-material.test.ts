@@ -4,6 +4,8 @@ import type { SessionMessageInfo } from "@opencode/client"
 import { collectEvidence, mergeEvidence } from "../src/diagram/evidence.js"
 import { evidenceKey } from "../src/diagram/cache.js"
 import { authorRequest } from "../src/diagram/author.js"
+import { materialEvidence } from "../src/diagram/cache.js"
+import { SnapshotSchema } from "../src/diagram/schema.js"
 
 function tool(id: string, name: string, input: unknown, text: string, at: number): SessionMessageInfo {
   return { type: "assistant", id, time: { created: at }, content: [{ type: "tool", id, name,
@@ -62,6 +64,27 @@ test("inventory updates are material even alongside unchanged user request", () 
   const changed = collectEvidence([request, tool("glob3", "glob", { pattern: "src/**" }, "src/api.ts\nsrc/worker.ts", 4)])
   assert.equal(evidenceKey(first, "overview"), evidenceKey(same, "overview"))
   assert.notEqual(evidenceKey(first, "overview"), evidenceKey(changed, "overview"))
+})
+
+test("public compaction retains current project focus without admitting reasoning or child objectives", () => {
+  const summary = "## Objective\nDevelop the current covariance receiver, not the retired three-head separator.\n## Current design\nRaw IQ -> moment estimates -> learned covariance -> solve -> range Doppler.\n## Next\nRecover halted training; recovery is supporting work."
+  const compact = (text: string, at: number) => ({ type: "compaction", id: `compact${at}`, time: { created: at }, status: "completed", summary: text,
+    recent: "PRIVATE RECENT", providerState: { private: "PRIVATE PROVIDER" } }) as unknown as SessionMessageInfo
+  const source = read("source", "receiver.py", "def forward(iq): return solve(covariance(iq), iq)", 3)
+  const first = collectEvidence([compact(summary, 1), source])
+  const focus = first.find(item => item.category === "context")!
+  assert.match(focus.text, /current covariance receiver/)
+  assert.match(focus.label, /historical, not source proof/)
+  assert.ok(materialEvidence(first).includes(focus), "native author selection and fingerprinting retain focus even alongside source")
+  assert.ok(SnapshotSchema.shape.evidence.safeParse(first).success)
+  assert.equal(evidenceKey(first, "overview"), evidenceKey(collectEvidence([compact(summary, 2), source]), "overview"), "same summary reobservation has no inference cost")
+  const next = collectEvidence([compact(summary, 1), compact(summary + "\nCurrent geometry: 8 by 32.", 4), source])
+  assert.equal(next.filter(item => item.category === "context").length, 1)
+  assert.notEqual(evidenceKey(first, "overview"), evidenceKey(next, "overview"))
+  const merged = mergeEvidence(next, collectEvidence([compact("Child task: audit receipts", 10)]))
+  assert.match(merged.find(item => item.category === "context")!.text, /Current geometry/)
+  assert.doesNotMatch(JSON.stringify(merged), /PRIVATE|Child task/)
+  assert.equal(collectEvidence([{ ...compact(summary, 1), status: "running" } as SessionMessageInfo]).length, 0)
 })
 
 test("incremental contract exposes and enforces remaining aggregate node budget", () => {

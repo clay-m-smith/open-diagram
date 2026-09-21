@@ -6,8 +6,8 @@ OpenCode 2.x installation; no downgrade to the dependency version in this
 repository is required. Dependency pins and `package-lock.json` make builds
 reproducible; `engines.opencode` describes the host compatibility range.
 The full suite, including isolated native runtime checks, currently passes on
-OpenCode **2.0.11**. Earlier 2.0.10-based runtime verification remains valid for
-that tested build; future 2.x releases are admitted, not pre-certified.
+OpenCode **2.0.11**, including the current result-tool generation path. The API
+dependency is 2.0.7; other admitted 2.x hosts are not pre-certified by this run.
 
 ## 1. Install from this repository
 
@@ -27,6 +27,7 @@ In the project you want to diagram, merge an entry into `opencode.json` or
 
 ```json
 {
+  "$schema": "https://opencode.ai/config.json",
   "plugins": [{
     "package": "/absolute/path/to/open-diagram",
     "options": { "backend": "manual" }
@@ -40,6 +41,15 @@ load together; do not register this package twice. Server/plugin configuration
 belongs in `opencode.json(c)`, not `cli.json`.
 
 ## 2. Decide who authors diagrams
+
+| Authoring path | Use it when… | Setup |
+| --- | --- | --- |
+| Active agent | You want explicit publication using your current chat model, without a secondary author | [Manual mode](#a-use-the-active-agent-manual-mode) |
+| Dedicated OpenCode model | You want automatic updates with independent provider/model/variant selection | [OpenCode backend](#b-use-a-dedicated-model-through-opencode) |
+| Compatible endpoint | You already serve a local model or want a direct remote API connection | [Endpoint backend](#c-use-an-openai-compatible-endpoint) |
+
+Configure one backend in the plugin's `options`. These are alternatives, not a
+fallback chain. Your chat and worker model choices stay unchanged.
 
 ### A. Use the active agent: manual mode
 
@@ -59,9 +69,10 @@ does not automatically turn into paid generation when the graph is empty.
    changes the **chat session**, not this plugin's configured diagram model.
 3. Copy the IDs into the plugin's `options`, replacing the manual settings:
 
-   ```json
-   {
-     "plugins": [{
+    ```json
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "plugins": [{
        "package": "/absolute/path/to/open-diagram",
        "options": {
          "backend": "opencode",
@@ -82,16 +93,129 @@ does not automatically turn into paid generation when the graph is empty.
 6. Reload and verify as described in steps 3 and 4 below.
 
 There is no universal best diagram model. Start with a responsive model that
-reliably emits structured JSON, then inspect the results against real sources.
+reliably submits structured tool arguments, then inspect the results against real sources.
 For unfamiliar HDL, firmware, or circuit work, prioritize domain understanding
 and accurate citations over speed. Smaller models may need narrower evidence and
 less granular views. No model is certified here for electrical correctness.
 
 These settings affect **only** diagram generation. They do not change OpenCode's
 top-level `model`, current chat, agent, or worker routing. The native adapter uses
-`ctx.generate.text` with this explicit provider/model/variant. It can make one
+stock OpenCode V2 session and tool APIs with this explicit provider/model/variant;
+no patched OpenCode build is required. It can make one
 validation-repair request within the original timeout, so one update may involve
 up to two model calls. It does not retry transport failures or switch providers.
+
+<details>
+<summary><strong>Native authoring internals: drafts, reuse, validation, and cancellation</strong></summary>
+
+For full generation, an author-facing draft JSON Schema is supplied directly as the
+`open_diagram_result` tool's input, not duplicated as schema text in the prompt. The model sees only
+that result tool; file, shell and other tools are denied. A successful submission
+stops the run without a follow-up narration call. This is schema-backed tool calling,
+not a claim that every provider strictly constrains generation: complete graph,
+reference, citation and budget validation still happens before publication.
+Public and endpoint JSON Schemas and runtime validators are unchanged.
+Native drafts use `format:"draft"` with fixed node rows
+`[id,label,kind,detail,behavior,overrides?]` and edge rows
+`[from,to,label,annotation?]`. These omit repeated property names, not content;
+unsupported behavior is `null`. Optional row overrides/annotations may also be
+`null` to mean absent (required family annotations are still validated).
+Each graph explicitly declares shared
+`defaults:{status,evidence}`; individual nodes and notation records override
+citations when their sources differ. The schema lists current citation IDs separately
+from node identifiers. The server never invents a default or silently repairs an
+unknown citation. Node/edge annotations sit directly on the record they describe
+for architecture, flowchart, state, class and ER, eliminating separately counted
+indices and repeated node references. Sequence, timing and circuit retain their
+ordered messages, signals and pin/net relationships. Code expands these declarations
+into the existing canonical graph, then runs the same full validation. Conflicting
+inline/canonical annotations, missing defaults, unknown fields and invalid references
+are rejected. Canonical full replies and the existing incremental shorthand remain
+accepted; stored graphs, external publication and exports do not change format.
+Tool descriptions are request-local: draft, incremental and repair requests explain
+their own output contract rather than using one generic result description.
+One reusable **Diagram author (managed)** session is retained per location. It uses
+the stock `general` agent without modifying its definition, and may appear in the
+session list. Do not use it as a chat session. Each request replaces model context
+with current bounded evidence; source packets are not added to its transcript.
+Normal OpenCode session storage can retain submitted diagram arguments and usage.
+The plugin interrupts and drains each run, including on Pause or unload; it does
+not require a local-service connection or delete sessions through a private API.
+Fingerprint metadata and absolute timestamps stay out of the model prompt; evidence
+text, source identities and relative observation order are preserved. Cold requests
+include only identity/topology hints from a prior diagram, not its old descriptions.
+When material sources exist, native requests use the same material boundary as
+the cache plus the latest user request, rather than resending progress summaries
+and unrelated command output. Source-associated mutation records remain included;
+request-only/non-code sessions keep their full evidence path.
+Repair receives safe field-level validation details, including exact code-owned
+notation rules. Invalid tab labels, prose lengths, and draft defaults use an exact-field
+repair when all other constraints pass a diagnostic probe. Only model-supplied
+replacements enter the result; defaults are never truncated or guessed. Text-only
+repairs omit source packets and valid graph content. Full validation still runs
+after expansion and merge. Local reason/node/notation faults return only affected replacements
+instead of regenerating the diagram. Reference checks run before selecting repair
+scope so malformed node fields cannot hide broken port owners or missing links.
+When only a node's evidence field is missing or replaced by one misnamed array of
+current citation IDs, repair asks for citation arrays only and preserves every
+other node field. The model must supply those citations explicitly; the server
+does not guess them. Ambiguous extra fields still require full node replacement.
+When architecture groups and ports are valid, only bad or missing link records
+are requested; valid links are retained instead of regenerated.
+Every requested replacement must appear exactly once, retain its node ID or
+notation family, and pass complete graph, relationship, budget, and citation validation
+after merging. Other failures still use one complete-output repair; invalid output
+never becomes an accepted diagram merely because it was called a repair.
+JSON failures expose only a fixed syntax category and character count (plus a
+numeric parser offset when available), never the parser's raw response excerpt.
+Known source edits use incremental authoring even when they affect the only view
+or every existing view. The native model can reference unchanged nodes and omit
+unchanged graph fields instead of reprinting cached descriptions, edges and notation.
+An existing node object may contain only its ID and changed fields; omitted fields
+are retained exactly. New nodes must satisfy the complete canonical node schema.
+Each view update may also supply a corrected `label` (1–24 characters); omitting
+it preserves the current caption. View IDs remain stable. A misleading caption or
+structure is not protected merely because it was previously cached.
+The server expands that shorthand and validates the complete result before publishing;
+missing current citations, unknown references, duplicate/missing view updates and
+aggregate node-budget violations are rejected. New or unknown sources receive all
+current evidence and all reusable cached views, with permission to replan the full
+view set. They no longer force a full rewrite when existing content remains valid.
+An unchanged Refresh reuses accepted cache with no model
+call; a genuine cache miss still depends on the configured provider's generation speed.
+When all existing views are affected, the author may also return a complete reorganized
+view set, so incremental reuse does not freeze the number of views or hide new structure.
+Authoring-policy revisions invalidate generation fingerprints, not stored diagrams:
+the last accepted view remains visible while the next observation re-evaluates it.
+Invalidated first-tab graphs are not reused as cold-generation hints; old defaults
+must not prime a new policy to restore an obsolete model.
+Completed public compaction summaries are retained as bounded `context` evidence,
+separate from source proof. This keeps the project subject and active design/version
+available when OpenCode replaces earlier turns with a summary. Changed context
+reopens the whole tab set; ordinary source-only edits still use narrowed updates.
+Child summaries cannot replace the parent's project context. No reasoning, provider
+state, private plugin data, or hidden history is collected.
+All-view incremental replies may order their updates by tab priority without
+reprinting unchanged graphs. Current system/model views take precedence over
+supporting research, audit, launch, and recovery workflows; superseded designs
+must be reconciled with current task context and source/configuration evidence.
+These semantic choices are authoring policy, not a keyword classifier or a claim
+that every generated view is automatically semantically verified.
+Malformed direct group membership, oversized supplied prose, and supported
+citation-array faults can use exact-field repair after incremental expansion.
+Unchanged fields remain exact; the completed result still passes full canonical
+schema, reference, citation and node-budget validation. The shared 90-second
+default deadline and at-most-one-repair limit are unchanged.
+The server uses public session interruption to propagate deadline,
+Pause, and unload cancellation to the provider transport. It waits for interruption
+cleanup before releasing the project's generation slot; it does not abandon a
+still-running request with a Promise race.
+Session reads, waits, and model selection use the public Effect API so cancellation
+also covers managed-session reuse; the 2.0.7 Promise adapter ignores request signals.
+Creation and prompt admission finish before explicit interruption/draining, avoiding
+orphaned mutations. Cleanup can outlast the generation deadline while work stops.
+
+</details>
 
 ### C. Use an OpenAI-compatible endpoint
 
@@ -100,9 +224,10 @@ up to two model calls. It does not retry transport failures or switch providers.
 2. Set `baseURL` to the API root (usually ending in `/v1`), **not** the full
    `/chat/completions` URL. Use the model identifier accepted by that service:
 
-   ```json
-   {
-     "plugins": [{
+    ```json
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "plugins": [{
        "package": "/absolute/path/to/open-diagram",
        "options": {
          "backend": "openai-compatible",
@@ -205,6 +330,15 @@ TypeScript imports, RPC examples, limits, and incremental behavior.
 - **Failed update:** the last valid graph remains visible with a warning. Change
   material evidence or explicitly Refresh to retry; there is no same-input retry
   loop. Native malformed-output repair is separately bounded to one extra call.
+- **Generation timeout:** this is the plugin's total wall-clock budget, not proof
+  that the provider returned a timeout. The warning identifies initial generation,
+  targeted repair, full validation repair, or endpoint request, with total/stage
+  elapsed milliseconds and the configured budget. Repair timeouts retain the
+  first safe validation cause rather than hiding it behind the deadline.
+  Initial generation and repair share one budget
+  (`timeoutMs`, default 90000); repair does not restart the clock. Cancellation
+  closes the local provider transport, but remote billing/compute cancellation
+  remains provider-controlled. Inspect the warning before changing models or limits.
 - **Too many updates:** pause tracking, narrow the work, or raise `intervalMs`
   (default 20000) / `debounceMs` (default 1500). These schedule event-driven work;
   they are not a viewing poll interval. `timeoutMs` defaults to 90000.

@@ -62,7 +62,7 @@ try:
             # Assert the rendered screen, not concatenated incremental VT writes.
             text = screen.text()
             if failure_mode:
-                if "Embedding 32" in screen.text() and "GELU" in screen.text() and "Diagram cited" in screen.text():
+                if "Embedding 32" in screen.text() and "GELU" in screen.text() and "Field repair" in screen.text():
                     print("OK: actual native TUI retains cached layers beside failed-update warning")
                     stage = 8
                     break

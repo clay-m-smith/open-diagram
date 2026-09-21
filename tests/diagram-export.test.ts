@@ -6,10 +6,11 @@ import { renderDiagramPNG, renderDiagramSVG } from "../src/diagram/export.js"
 import { createDiagramExportActions, type ExportHost } from "../src/diagram/export-actions.js"
 import { saveDiagramFile, copyDiagramImage } from "../src/diagram/export-platform.js"
 import type { DiagramGraph } from "../src/diagram/schema.js"
-import { layoutDiagram } from "../src/diagram/layout.js"
+import { layoutDiagram, diagramTextWidth } from "../src/diagram/layout.js"
 import { diagramArrowColor } from "../src/diagram/arrow-colors.js"
 import { notationFixtures } from "./fixtures/notations.js"
 import { sceneMarkerSVG } from "../src/diagram/scene-export.js"
+import { runtimeRouting } from "./fixtures/routing.js"
 
 const graph: DiagramGraph = { title: "Model <SVG> & image", summary: "Not displayed",
   nodes: [
@@ -83,6 +84,28 @@ test("specialized SVG and PNG expose shared notation geometry without citations"
   }
 })
 
+test("architecture dependencies and group borders are solid while UML dependency dashes remain semantic", async () => {
+  const architecture = structuredClone(notationFixtures.architecture)
+  assert.ok(architecture.notation?.family === "architecture")
+  architecture.notation.links.forEach(link => { link.role = "dependency" })
+  const svg = await renderDiagramSVG(architecture, { colorMode: "dark" })
+  assert.doesNotMatch(svg, /stroke-dasharray/)
+  assert.match(svg, /dependency/)
+  assert.match(svg, /stroke-opacity="0.65"/)
+  const layout = await layoutDiagram(architecture)
+  assert.ok(layout.edges.every(e => !e.dashed), "native and exported architecture connectors are continuous")
+  for (const edge of layout.edges) for (const region of layout.scene!.regions) {
+    const right = edge.labelX + Math.max(0, ...edge.labelLines.map(diagramTextWidth)), bottom = edge.labelY + edge.labelLines.length
+    if (edge.labelY < region.y + region.height && bottom > region.y) {
+      assert.ok(!(edge.labelX <= region.x && right > region.x) && !(edge.labelX <= region.x + region.width - 1 && right > region.x + region.width - 1), "group borders cannot strike through relocated labels")
+    }
+  }
+  const uml = structuredClone(notationFixtures.class)
+  assert.ok(uml.notation?.family === "class")
+  uml.notation.relationships[0].kind = "dependency"
+  assert.match(await renderDiagramSVG(uml), /stroke-dasharray="5 4"/)
+})
+
 test("PNG marker orientation points toward the endpoint for replies and source arrows", async () => {
   const { Resvg } = await import("@resvg/resvg-js")
   // A leftward reply and a start arrow on a rightward path both point left.
@@ -130,6 +153,14 @@ test("ELK exports separate ports and preserves orthogonal border joins", async (
   for (const route of (await renderDiagramSVG(cyclic)).matchAll(/<path d="([^"]+)"[^>]*marker-end=/g)) {
     const points = [...route[1].matchAll(/[ML]([\d.]+),([\d.]+)/g)].map((p) => [Number(p[1]), Number(p[2])])
     for (let i = 1; i < points.length; i++) assert.ok(points[i][0] === points[i - 1][0] || points[i][1] === points[i - 1][1], "border extension must not turn snapped bend into a diagonal")
+  }
+  const expanded = await renderDiagramSVG(runtimeRouting, { selected: "n6" })
+  for (const route of expanded.matchAll(/<path d="([^"]+)"[^>]*marker-end=/g)) {
+    const points = [...route[1].matchAll(/[ML]([\d.]+),([\d.]+)/g)].map(p => [Number(p[1]), Number(p[2])])
+    for (let i = 1; i < points.length; i++) assert.ok(points[i][0] === points[i - 1][0] || points[i][1] === points[i - 1][1])
+    const tip = points.at(-1)!, tail = points.at(-2)!, approach = points.at(-3)!
+    assert.ok((tip[0] - tail[0]) * (tail[0] - approach[0]) + (tip[1] - tail[1]) * (tail[1] - approach[1]) > 0,
+      "border extension and arrow shaft stay continuous rather than reversing or ending at a sideways bend")
   }
   const crowded = await renderDiagramSVG({ ...cyclic, edges: [...cyclic.edges,
     ...Array.from({ length: 30 }, (_, i) => ({ from: "d", to: "b", label: `return ${i}` }))] }, { colorMode: "dark" })

@@ -99,6 +99,65 @@ test("known source change updates only dependent view; bursts and duplicate Refr
   } finally { for (const call of calls) call.gate.resolve(analysis()); await engine.dispose() }
 })
 
+test("known edits can incrementally update all views; new sources still permit a full replan", async () => {
+  for (const selected of [[views[0]], views]) {
+    const scopes: (string[] | undefined)[] = []
+    const data = evidence.slice(0, selected.length)
+    const h = fixture(async (input, _p, _f, _s, _d, update) => {
+      scopes.push(update?.views.map(view => view.id))
+      if (scopes.length === 3) assert.ok(input.some(item => item.id === "new_source"), "unknown scope must include new evidence, not only cached dependencies")
+      if (update) {
+        assert.equal(update.replaceAll, true, "all-view updates allow structural reorganization rather than freezing view count")
+        return analysis([...selected, { ...selected[0], id: "expanded", label: "Expanded" }])
+      }
+      return analysis(selected)
+    })
+    const engine = new DiagramEngine(h.deps)
+    try {
+      await engine.observe("all", data)
+      await until(() => !!h.saved.get("all"))
+      const changed = data.map(item => ({ ...item, text: item.text + " changed" }))
+      await engine.observe("all", changed)
+      await until(() => scopes.length === 2)
+      assert.deepEqual(scopes[1], selected.map(view => view.id))
+      await until(async () => (await engine.get("all")).views.length === selected.length + 1)
+      await engine.observe("all", [...changed, { id: "new_source", label: "New source", text: "New subsystem", category: "source" }])
+      await until(() => scopes.length === 3)
+       assert.deepEqual(scopes[2], [...selected.map(view => view.id), "expanded"], "unknown scope supplies reusable baseline while replaceAll permits new views")
+    } finally { await engine.dispose() }
+  }
+})
+
+test("compacted focus changes replan all tabs, while ordinary source edits keep focus in narrowed input", async () => {
+  const focus: Evidence = { id: "focus", label: "Compacted context", text: "Current design is Model A", category: "context" }
+  const currentViews = structuredClone(views)
+  currentViews[1].graph.nodes[0].evidence.push("focus")
+  let calls = 0
+  const h = fixture(async (input, _p, _f, _s, _d, update) => {
+    calls++
+    assert.ok(input.some(item => item.id === "focus"))
+    if (calls === 2) {
+      assert.deepEqual(update?.views.map(view => view.id), ["model"])
+      return analysis([currentViews[0]])
+    }
+    if (calls === 3) {
+      assert.equal(update?.replaceAll, true, "new focus must not freeze an old uncited primary model tab")
+      assert.equal(update.views.length, 2)
+    }
+    return analysis(currentViews)
+  })
+  const engine = new DiagramEngine(h.deps)
+  try {
+    await engine.observe("focus", [...evidence, focus])
+    await until(() => !!h.saved.get("focus"))
+    const changed = [{ ...evidence[0], text: "Convolution 256" }, evidence[1]]
+    await engine.observe("focus", [...changed, focus])
+    await until(() => calls === 2 && h.saved.get("focus")?.phase === "ready")
+    await engine.observe("focus", [...changed, { ...focus, text: "Current design is Model B; Model A is retired" }])
+    await until(() => calls === 3)
+  } finally { await engine.dispose() }
+})
+
 test("failed incremental update never erases accepted output; unchanged noise does not retry; explicit retry can recover", async () => {
   let calls = 0; let fail = true
   const h = fixture(async (_data, _p, _f, _s, _d, update) => {

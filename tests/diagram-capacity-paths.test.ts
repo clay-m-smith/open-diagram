@@ -33,7 +33,7 @@ for (const action of ["snapshot", "refresh", "hook"] as const) for (const phase 
       storage: { get: async () => undefined, set: async () => {} }, event: { async *subscribe() {} },
     }
     const cleanup = await defineDiagramPlugin({ backend: "opencode", providerID: "fixture", model: "fixture", intervalMs: 1000,
-      debounceMs: phase === "pending" ? 500 : 100 }).setup(ctx as unknown as Plugin.Context)
+      debounceMs: phase === "pending" ? 500 : 100 }, async () => ({ generate: ctx.generate.text, owns: () => false })).setup(ctx as unknown as Plugin.Context)
     const request = { signal: new AbortController().signal, error: (_type: string, message: string) => Error(message) }
     const output = { text: '{"relevant":false,"reason":"fixture","views":[]}' }
     try {

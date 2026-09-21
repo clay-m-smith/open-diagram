@@ -28,7 +28,8 @@ test("main-agent snapshot cannot swallow admitted Refresh or cold depth authorin
     rpc: { register: async (_rpc: unknown, handlers: unknown) => { methods = handlers; return { events: { emit: async (_name: string, value: unknown) => { updates.push(value) } } } } },
     storage: { get: async () => undefined, set: async () => {} }, event: { async *subscribe() {} },
   }
-  const cleanup = await defineDiagramPlugin({ backend: "opencode", providerID: "fixture", model: "model", intervalMs: 1000, debounceMs: 100 }).setup(ctx as unknown as Plugin.Context)
+  const cleanup = await defineDiagramPlugin({ backend: "opencode", providerID: "fixture", model: "model", intervalMs: 1000, debounceMs: 100 },
+    async () => ({ generate: ctx.generate.text, owns: () => false })).setup(ctx as unknown as Plugin.Context)
   const request = { signal: new AbortController().signal }
   const wait = async (predicate: () => boolean) => {
     const end = Date.now() + 4000

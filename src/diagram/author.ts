@@ -11,9 +11,11 @@ export function authorRequest(evidence: readonly Evidence[], previous: DiagramGr
   const hint = previous && mapDiagramEvidence(previous, () => [])
   const request = diagramRequest(input, hint, forced, granularity)
   if (update) {
-    request.instruction += `\nIncremental update: return exactly these existing views, with unchanged IDs and labels: ${JSON.stringify(update.views.map(({ id, label }) => ({ id, label })))}. Do not create or return other views. Update only what current evidence changes. Return each selected view's complete graph; keep stable node IDs and grounded details. Unselected views are cached separately and will not be regenerated.`
+    request.instruction += update.replaceAll
+      ? "\nIncremental update: all cached views are affected. Prefer stable view/node IDs; keep labels when accurate, correct them when misleading. Return a reorganized complete view set if current structure needs it. Do not omit architecture merely to preserve the old view count."
+      : `\nIncremental update: return exactly these existing view IDs (listed labels are current hints, not constraints): ${JSON.stringify(update.views.map(({ id, label }) => ({ id, label })))}. Do not create or return other views. Correct misleading labels and structure within the selected views. Return each selected view's complete graph; keep stable node IDs and grounded details. Unselected views are cached separately and will not be regenerated.`
     request.instruction += ` Your returned views may contain at most ${update.maxNodes ?? 48} nodes TOTAL; remaining nodes are reserved by untouched cached views. This overrides the general 48-node total. File mutation observations are ordered deltas: combine them with baseline reads; a later partial read does not erase changes outside its range.`
-    Object.assign(request.input, { update: { maxNodes: update.maxNodes ?? 48, views: update.views.map((view) => ({ ...view, graph: mapDiagramEvidence(view.graph, () => []) })) } })
+    Object.assign(request.input, { update: { maxNodes: update.maxNodes ?? 48, replaceAll: !!update.replaceAll, views: update.views.map((view) => ({ ...view, graph: mapDiagramEvidence(view.graph, () => []) })) } })
   }
   return {
     request,

@@ -57,7 +57,9 @@ type Graph = { nodes: { id: string }[]; edges: { from: string; to: string; label
 export function refineNotation(graph: Graph, ctx: z.RefinementCtx) {
   const n = graph.notation
   if (!n) return
-  const fail = (message: string) => ctx.addIssue({ code: "custom", path: ["notation"], message })
+  // These rule messages contain only code-owned descriptions, never source IDs
+  // or values. Mark them so author feedback can preserve the actual constraint.
+  const fail = (message: string) => ctx.addIssue({ code: "custom", path: ["notation"], message, params: { diagramRule: true } })
   const nodes = new Set(graph.nodes.map((node) => node.id))
   const unique = (items: readonly string[], name: string) => { if (new Set(items).size !== items.length) fail(`Duplicate ${name}`) }
   const cover = (items: readonly string[]) => {

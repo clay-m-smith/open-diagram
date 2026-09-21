@@ -22,7 +22,7 @@ export function renderSceneSVG(scene: DiagramScene, options: {
   const tone = (value?: number) => value === undefined ? options.subdued : diagramArrowColor(value, options.dark)
   const elements: string[] = []
   for (const region of scene.regions) {
-    elements.push(`<rect x="${left + region.x * cell}" y="${top + region.y * line}" width="${region.width * cell}" height="${region.height * line}" fill="${region.style === "activation" ? options.card : "none"}" stroke="${options.border}"${region.style === "group" ? ' stroke-dasharray="6 4"' : ""}/>`)
+    elements.push(`<rect x="${left + region.x * cell}" y="${top + region.y * line}" width="${region.width * cell}" height="${region.height * line}" fill="${region.style === "activation" ? options.card : "none"}" stroke="${options.border}"${region.style === "group" ? ' stroke-opacity="0.65"' : ""}/>`)
     if (region.label) elements.push(`<text x="${x(region.x + 1)}" y="${y(region.y) + 6}" fill="${options.subdued}">${escape(region.label)}</text>`)
   }
   scene.paths.forEach((path, index) => {

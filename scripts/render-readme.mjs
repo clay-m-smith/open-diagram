@@ -15,9 +15,14 @@ assert.ok(process.argv.slice(2).every((arg) => arg === "--check"), "Usage: npm r
 const sources = [
   { id: "server", label: "src/diagram/server.ts", text: "Registers scoped RPC, session hooks, public-context collection and native storage callbacks." },
   { id: "evidence", label: "src/diagram/evidence.ts", text: "Collects bounded public session evidence; selection.ts supplies bounded excerpts." },
+  { id: "selection", label: "src/diagram/selection.ts", text: "Selects bounded excerpts across source, structure, request and historical context categories." },
   { id: "engine", label: "src/diagram/engine.ts", text: "Owns snapshots, model scheduling, accepted diagrams and durable cache reuse." },
   { id: "author", label: "src/diagram/author.ts", text: "Builds the canonical author request and remaps current citations after validation." },
   { id: "client", label: "src/diagram/client.ts", text: "Calls the explicitly configured automatic backend. Manual publications use native tools or RPC instead." },
+  { id: "draft", label: "src/diagram/draft.ts", text: "Expands native compact draft rows and inline notation annotations into canonical graphs." },
+  { id: "incremental", label: "src/diagram/incremental.ts", text: "Expands sparse view updates while preserving omitted, unchanged content exactly." },
+  { id: "harness", label: "src/diagram/harness.ts", text: "Validates complete output against canonical schemas and the current evidence citation set." },
+  { id: "cache", label: "src/diagram/cache.ts", text: "Fingerprints material evidence and selects affected cached views for incremental updates." },
   { id: "tui", label: "src/diagram/tui.tsx", text: "Loads scoped snapshots, listens for updates and presents native controls and views." },
   { id: "view", label: "src/diagram/view.tsx", text: "Renders shared layout geometry and selectable native cards; viewing does not call a model." },
   { id: "export", label: "src/diagram/export.ts", text: "Renders the active graph through shared layout to SVG and PNG, without model calls." },
@@ -29,7 +34,7 @@ const architecture = GraphSchema.parse({
   title: "Open Diagram · from session to structure",
   summary: "High-level data flow with an explicitly configured automatic diagram author. Manual tools use the same validation and publication path.",
   nodes: [
-    node("context", "Public session evidence", "server.ts, evidence.ts and selection.ts bound current requests, source reads and related-session work.", ["server", "evidence"]),
+    node("context", "Public session evidence", "Bounded source reads, current requests and related-session work; compaction summaries supply historical context, not source proof.", ["server", "evidence"]),
     node("engine", "Diagram engine", "engine.ts owns accepted views, change detection and per-depth cache reuse.", ["engine"]),
     node("author", "Configured diagram model", "client.ts and author.ts request schema-constrained views using an explicitly selected backend.", ["client", "author"]),
     node("storage", "Location-scoped storage", "Native plugin storage persists graph snapshots, tracking preferences and accepted caches.", ["server", "engine"]),
@@ -43,6 +48,30 @@ const architecture = GraphSchema.parse({
     { from: "engine", to: "storage", label: "persist" },
     { from: "engine", to: "tui", label: "RPC snapshots" },
     { from: "tui", to: "images", label: "active graph" },
+  ],
+})
+
+const authoring = GraphSchema.parse({
+  title: "Open Diagram · authoring and publication",
+  summary: "Native automatic authoring on changed evidence. Expansion and complete validation precede publication; at most one repair shares the original deadline. Accepted views support later incremental reuse.",
+  nodes: [
+    node("records", "Public evidence records", "Public session text and completed tool results supply evidence; completed compaction summaries provide bounded historical context.", ["evidence"]),
+    node("selection", "Evidence selection", "Separate material and context budgets retain useful excerpts without letting recent logs displace sources.", ["evidence", "selection"]),
+    node("author", "Configured native author", "The dedicated OpenCode model receives current evidence, a result-tool schema and reusable views when available.", ["client", "author", "incremental"]),
+    node("expansion", "Draft / notation expansion", "Compact rows and inline family annotations expand into canonical graphs; sparse updates merge unchanged cached fields.", ["draft", "incremental"]),
+    node("validation", "Full output validation", "Canonical schemas, reference rules, citation membership and node budgets must pass before publication.", ["harness", "author"]),
+    node("engine", "Engine publication", "The engine checks freshness, retains accepted views and publishes snapshots; failures preserve the last valid diagram.", ["engine"]),
+    node("cache", "Accepted view cache", "Location-scoped storage keeps accepted snapshots and per-depth caches; unchanged input reuses them without inference.", ["engine", "cache", "server"]),
+  ],
+  edges: [
+    { from: "records", to: "selection", label: "bounded excerpts" },
+    { from: "selection", to: "author", label: "current evidence" },
+    { from: "author", to: "expansion", label: "result tool" },
+    { from: "expansion", to: "validation", label: "canonical views" },
+    { from: "validation", to: "engine", label: "valid output" },
+    { from: "engine", to: "cache", label: "persist accepted" },
+    { from: "validation", to: "author", label: "one repair max" },
+    { from: "cache", to: "author", label: "incremental reuse" },
   ],
 })
 
@@ -69,7 +98,7 @@ const cachedView = GraphSchema.parse({
   },
 })
 
-const views = [{ id: "architecture", label: "Architecture", graph: architecture }, { id: "cached-view", label: "Cached view", graph: cachedView }]
+const views = [{ id: "architecture", label: "Architecture", graph: architecture }, { id: "authoring", label: "Authoring", graph: authoring }, { id: "cached-view", label: "Cached view", graph: cachedView }]
 validateDiagramOutput({ relevant: true, reason: "Source-linked views of this repository", views }, sources)
 if (!check) await mkdir(output, { recursive: true })
 for (const { id, graph } of views) for (const colorMode of ["light", "dark"]) {

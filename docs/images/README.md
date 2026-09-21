@@ -1,6 +1,6 @@
 # README images
 
-These are exports of **Open Diagram's own architecture and cached-view flow**,
+These are exports of **Open Diagram's own architecture, authoring pipeline, and cached-view flow**,
 not terminal screenshots, model-generated source analysis, or stock illustrations.
 The graph definitions and source citations are hand-authored in
 [`scripts/render-readme.mjs`](https://github.com/clay-m-smith/open-diagram/blob/main/scripts/render-readme.mjs). The script checks
@@ -31,10 +31,16 @@ the adjacent SVG links provide the vector versions.
 | View | Source basis |
 | --- | --- |
 | Architecture | [`server.ts`](../../src/diagram/server.ts), [`evidence.ts`](../../src/diagram/evidence.ts), [`engine.ts`](../../src/diagram/engine.ts), [`author.ts`](../../src/diagram/author.ts), [`client.ts`](../../src/diagram/client.ts), [`tui.tsx`](../../src/diagram/tui.tsx), [`export.ts`](../../src/diagram/export.ts) |
+| Authoring | Public records and excerpts in [`evidence.ts`](../../src/diagram/evidence.ts) / [`selection.ts`](../../src/diagram/selection.ts), native authoring and repair in [`client.ts`](../../src/diagram/client.ts), expansion in [`draft.ts`](../../src/diagram/draft.ts) / [`incremental.ts`](../../src/diagram/incremental.ts), validation in [`harness.ts`](../../src/diagram/harness.ts) / [`author.ts`](../../src/diagram/author.ts), publication and reuse in [`engine.ts`](../../src/diagram/engine.ts) / [`cache.ts`](../../src/diagram/cache.ts) |
 | Cached view | `createDiagramMonitor` in [`tui.tsx`](../../src/diagram/tui.tsx), scoped `get` in [`server.ts`](../../src/diagram/server.ts), `DiagramEngine.get` in [`engine.ts`](../../src/diagram/engine.ts), and local rendering in [`view.tsx`](../../src/diagram/view.tsx) |
 
 The architecture view summarizes data flow with an explicitly configured automatic
-author. It is not a complete function-call graph. Manual tools share validation
-and publication without invoking that secondary author. The sequence illustrates
+author. It is not a complete function-call graph. The authoring view expands the
+native OpenCode path on changed evidence: compact draft or incremental expansion,
+complete validation, publication, and accepted-cache feedback. Its repair arrow
+represents **at most one** additional model call within the original deadline,
+not an unbounded retry loop. Endpoint and manual authors submit canonical graphs
+instead of native drafts; manual tools share validation and publication without
+invoking that secondary author. The sequence illustrates
 a cold **TUI** cache and warm **engine** cache; a warm TUI can reuse its local
 snapshot without another server read. Engine hydration from storage is omitted.

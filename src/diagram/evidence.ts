@@ -71,6 +71,8 @@ function toolInput(name: string, input: unknown): string {
 
 /** Reserve room for live child evidence while retaining the parent's current job. */
 export function mergeEvidence(parent: Evidence[], children: Evidence[]): Evidence[] {
+  // A worker's compacted objective must not replace its parent's project focus.
+  children = children.filter(item => item.category !== "context")
   const files = new Set([...parent, ...children].filter((item) => item.file && item.category && materialCategory(item.category)).map((item) => item.file))
   const promote = (items: Evidence[]) => items.map((item) => item.file && files.has(item.file) && item.category && !materialCategory(item.category)
     ? { ...item, category: "source" as const } : item)
@@ -108,7 +110,8 @@ function category(name: string, path: string, output: string): EvidenceCandidate
   return "recent"
 }
 
-/** Only public user/assistant text and completed text tool evidence; never system/reasoning/media. */
+/** Only public conversation/compaction text and completed text tool evidence;
+ * never system instructions, reasoning, provider state or media. */
 export function collectEvidence(messages: readonly SessionMessageInfo[]): Evidence[] {
   const records: Candidate[] = []
   let materialMessages = 0
@@ -118,6 +121,13 @@ export function collectEvidence(messages: readonly SessionMessageInfo[]): Eviden
     if (!recent && materialMessages >= 120) break
     const message = messages[index]
     const at = message.time?.created ?? index
+    if (message.type === "compaction" && message.status === "completed") {
+      // context() replaces older turns with this public summary. Ignoring it
+      // loses the subject/version being designed while retaining recent chores.
+      // One stable identity lets a newer compaction supersede, not accumulate.
+      records.push({ key: "compacted-context", source: "compacted-context", label: "Compacted context (historical, not source proof)",
+        text: message.summary, category: "context", order: at, position: index * 1024 })
+    }
     if (recent && message.type === "user") records.push({ key: message.id, label: "User request", text: message.text, category: "request", order: at, position: index * 1024 })
     if (message.type !== "assistant") continue
     const start = records.length

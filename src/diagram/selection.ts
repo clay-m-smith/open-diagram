@@ -4,7 +4,7 @@ export type EvidenceCandidate = {
   key: string
   label: string
   text: string
-  category: "request" | "source" | "structure" | "recent" | "inventory" | "assistant"
+  category: "request" | "context" | "source" | "structure" | "recent" | "inventory" | "assistant"
   source?: string
   order: number
 }
@@ -18,12 +18,12 @@ const OMIT = "\n[... omitted ...]\n"
 const SCAN_LIMIT = 131_072
 const POOL_LIMIT = 128
 const ID_LENGTH = 26
-const CATEGORIES: Category[] = ["request", "source", "structure", "inventory", "recent", "assistant"]
+const CATEGORIES: Category[] = ["request", "context", "source", "structure", "inventory", "recent", "assistant"]
 const SHARES: Record<Category, number> = {
-  request: 0.14, source: 0.34, structure: 0.24, inventory: 0.12, recent: 0.10, assistant: 0.06,
+  request: 0.14, context: 0.12, source: 0.30, structure: 0.20, inventory: 0.10, recent: 0.08, assistant: 0.06,
 }
 const TEXT_LIMITS: Record<Category, number> = {
-  request: 4000, source: 4000, structure: 4000, inventory: 4000, recent: 900, assistant: 1200,
+  request: 4000, context: 4000, source: 4000, structure: 4000, inventory: 4000, recent: 900, assistant: 1200,
 }
 
 function bound(value: number | undefined, fallback: number): number {
@@ -214,7 +214,7 @@ function shortlist(candidates: readonly EvidenceCandidate[]): Ranked[] {
  * A nonempty record needs at least 27 characters: 26 for its ID and one for text.
  * Latest request is reserved first whenever budget/limit can hold a record.
  * Candidate metadata is scanned twice; each excerpt inspects at most 128 KiB
- * of input text, with at most 768 shortlisted identities across all categories.
+   * of input text, with at most 896 shortlisted identities across all categories.
  */
 export function selectEvidence(
   candidates: readonly EvidenceCandidate[],
@@ -286,7 +286,7 @@ export function selectEvidence(
     }
   }
 
-  const fill: Category[] = ["source", "structure", "inventory", "request", "recent", "assistant"]
+  const fill: Category[] = ["source", "structure", "inventory", "request", "context", "recent", "assistant"]
   while (remaining > ID_LENGTH && selected.length < limit) {
     let progress = false
     for (const category of fill) {

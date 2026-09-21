@@ -464,7 +464,15 @@ function DiagramPanel(props: {
   ]
 
   return (
-    <box width={props.panel.width} height="100%" flexDirection="column">
+    <box width={props.panel.width} height="100%" flexDirection="column" onMouseScroll={(event) => {
+      const direction = event.scroll?.direction
+      const horizontal = event.modifiers.shift ? direction === "up" || direction === "down" : direction === "left" || direction === "right"
+      if (!horizontal) return
+      const graph = scroll?.content.findDescendantById("open-diagram-graph-scroll")
+      if (!(graph instanceof ScrollBoxRenderable)) return
+      event.stopPropagation()
+      graph.scrollBy({ x: (direction === "left" || direction === "up" ? -1 : 1) * (event.scroll?.delta ?? 1) * 3, y: 0 })
+    }}>
       <text flexShrink={0} fg={colors().text}>
         {`Diagram · ${state()?.phase ?? "watching"}${monitor.busy() ? " · …" : ""}`}
       </text>
@@ -530,17 +538,29 @@ function DepthTabs(props: { ctx: Plugin.Context; state?: DiagramState; control(i
 function DiagramContent(props: { ctx: Plugin.Context; state?: DiagramState; problem?: string; tab?: string; selected?: string; select(id: string | undefined): void;
   onLayout?(graph: DiagramGraph, nodes: DiagramGraph["nodes"]): void }) {
   const colors = () => diagramColors(props.ctx.theme)
+  const [columns, setColumns] = createSignal(31)
+  let disposed = false; let queued = false; let measured = 31
+  onCleanup(() => { disposed = true })
+  const resize = function(this: BoxRenderable) {
+    if (this.width <= 0) return
+    measured = Math.max(1, Math.floor(this.width))
+    if (queued) return
+    queued = true
+    // Percent widths through conditional native layout slots can retain the
+    // pre-scrollbar width. Use the measured content viewport, after Yoga's pass.
+    queueMicrotask(() => { queued = false; if (!disposed) setColumns(measured) })
+  }
   const view = () => {
     const views = props.state ? analysisViews(props.state) : []
     return views.find((view) => view.id === props.tab) ?? views[0]
   }
   const error = () => [...new Set([props.problem, props.state?.collectionError, props.state?.cacheError, props.state?.updateError,
     props.state?.phase === "unavailable" ? props.state.reason : undefined].filter(Boolean))].join(" · ")
-  return <box width="100%" flexDirection="column" flexShrink={0}>
-    <Show when={error()}><text fg={colors().accent}>{error()}</text></Show>
-    <Show when={view()} fallback={<text fg={colors().subdued}>{props.state?.reason ?? "Waiting…"}</text>}>
-      <text fg={colors().subdued}>{`${view()!.graph.title}${view()!.graph.notation ? ` · ${view()!.graph.notation!.family}` : ""}${props.state?.stale ? " · stale" : ""}`}</text>
-      <Show when={view()!.graph.notation && view()!.graph.summary}><text fg={colors().subdued}>{view()!.graph.summary}</text></Show>
+  return <box width="100%" flexDirection="column" flexShrink={0} onSizeChange={resize}>
+    <Show when={error()}><text width={columns()} wrapMode="word" flexShrink={0} fg={colors().accent}>{error()}</text></Show>
+    <Show when={view()} fallback={<text width={columns()} wrapMode="word" flexShrink={0} fg={colors().subdued}>{props.state?.reason ?? "Waiting…"}</text>}>
+      <text width={columns()} wrapMode="word" flexShrink={0} fg={colors().subdued}>{`${view()!.graph.title}${view()!.graph.notation ? ` · ${view()!.graph.notation!.family}` : ""}${props.state?.stale ? " · stale" : ""}`}</text>
+      <Show when={view()!.graph.notation && view()!.graph.summary}><text width={columns()} wrapMode="word" flexShrink={0} fg={colors().subdued}>{view()!.graph.summary}</text></Show>
       <CompactDiagram graph={view()!.graph} changed={props.state?.changedViews[view()!.id] ?? props.state?.changed ?? []}
         sources={props.state?.sources ?? []} selected={props.selected} onSelect={props.select}
         colors={colors()} onLayout={(nodes) => props.onLayout?.(view()!.graph, nodes)} />
