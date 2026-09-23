@@ -67,7 +67,8 @@ does not automatically turn into paid generation when the graph is empty.
 2. Run `opencode models` from that project to inspect available provider/model
    IDs. The `/models` picker also shows available models, but selecting one there
    changes the **chat session**, not this plugin's configured diagram model.
-3. Copy the IDs into the plugin's `options`, replacing the manual settings:
+3. Copy the IDs into the plugin's `options`, replacing the manual settings.
+   This example selects **GPT-6 Luna** through OpenAI (`openai/gpt-6-luna`):
 
     ```json
     {
@@ -76,12 +77,16 @@ does not automatically turn into paid generation when the graph is empty.
        "package": "/absolute/path/to/open-diagram",
        "options": {
          "backend": "opencode",
-         "providerID": "YOUR_PROVIDER_ID",
-         "model": "YOUR_MODEL_ID"
+         "providerID": "openai",
+         "model": "gpt-6-luna"
        }
      }]
    }
    ```
+
+   Use this pair only when it appears in your target project's catalog; otherwise
+   substitute the provider/model you connected. Installation still defaults to
+   manual authoring until you explicitly configure an automatic backend.
 
 4. If the catalog displays `provider/model`, split at the **first** slash:
    `providerID` is the provider; `model` is everything after it. A model ID can

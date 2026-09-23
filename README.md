@@ -89,19 +89,21 @@ if its plugin entry has not appeared. `/open-diagram` opens the diagram view.
 
 For automatic diagrams, connect the provider in OpenCode using `/connect`, then
 inspect the available catalog with `opencode models` from the target project.
-Use real IDs from that catalog—not a guessed model name. Replace the manual
-entry's options with:
+Use real IDs from that catalog—not a guessed model name. For **GPT-6 Luna**
+through OpenAI (`openai/gpt-6-luna`), replace the manual entry's options with:
 
 ```json
 {
   "backend": "opencode",
-  "providerID": "YOUR_PROVIDER_ID",
-  "model": "YOUR_MODEL_ID"
+  "providerID": "openai",
+  "model": "gpt-6-luna"
 }
 ```
 
 **These are plugin options, not OpenCode's top-level `model` setting.** They select
 only the diagram author; your chat, agent, and worker routing stay unchanged.
+This is an opt-in setup example, not a paid installation default. If your catalog
+uses another provider or model, substitute its exact IDs.
 Credentials come from OpenCode. Automatic generation can incur provider charges.
 Choose a model that reliably submits structured tool arguments and understands
 the domain you are diagramming; no particular provider or model is required.
