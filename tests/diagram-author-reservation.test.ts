@@ -15,7 +15,9 @@ async function until(predicate: () => boolean) {
   while (!predicate()) { assert.ok(Date.now() < end, "reservation deadline"); await delay(2) }
 }
 
-test("main-agent reservation survives own hooks; successful publication cancels fallback", async () => {
+test("main-agent reservation survives own hooks; successful publication cancels fallback", async (t) => {
+  // Exercise reservation time, not wall-clock scheduling under parallel suites.
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] })
   let calls = 0
   const engine = new DiagramEngine({ intervalMs: 1, debounceMs: 1, authoringMs: 80,
     load: async () => undefined, save: async () => {}, publish: async () => {}, analyze: async () => { calls++; return analysis },
@@ -23,13 +25,16 @@ test("main-agent reservation survives own hooks; successful publication cancels 
   try {
     await engine.observe("a", evidence, false)
     const snapshot = await engine.snapshot("a")
-    for (let i = 0; i < 10; i++) { await engine.observe("a", [...evidence, { id: `chat${i}`, label: "chat", text: "working", category: "assistant" }]); await delay(2) }
+    for (let i = 0; i < 10; i++) {
+      await engine.observe("a", [...evidence, { id: `chat${i}`, label: "chat", text: "working", category: "assistant" }])
+      t.mock.timers.tick(2)
+    }
     assert.equal(calls, 0)
     // Harmless transcript changes neither regenerate nor invalidate authoring.
     const current = await engine.snapshot("a")
     assert.equal(current.token, snapshot.token)
     await engine.submit("a", snapshot.token, { relevant: true, reason: analysis.reason, views })
-    await delay(100)
+    t.mock.timers.tick(100)
     assert.equal(calls, 0)
   } finally { await engine.dispose() }
 })

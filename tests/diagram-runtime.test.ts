@@ -29,6 +29,7 @@ test("live diagrams follow actual OpenCode V2 prompt and native edit hooks throu
   assert.match(result.stdout, /native durable fingerprints make unchanged Refresh and cached depth switches zero-model operations/)
   assert.match(result.stdout, /main-agent chat and progress cause zero diagram-model calls/)
   assert.match(result.stdout, /native source edit authors only dependent view with reduced evidence and preserves unrelated view/)
+  assert.match(result.stdout, /native incremental citation-key typo publishes current citations without a repair call/)
   assert.match(result.stdout, /auto-enabled main-agent snapshot\/publication adds zero secondary model calls/)
   assert.match(result.stdout, /actual native TUI retains cached layers beside failed-update warning/)
   assert.match(result.stdout, /native failed update preserves ready cached views; explicit changed-input retry recovers/)

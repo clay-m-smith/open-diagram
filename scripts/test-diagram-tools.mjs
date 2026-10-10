@@ -51,7 +51,7 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
 try {
   await withV2Runtime(async (client, { temporary }) => {
     const project = join(temporary, "tools"); await mkdir(join(project, "provider"), { recursive: true })
-    await writeFile(join(project, "provider/index.ts"), `import {Plugin,Provider,Model} from ${JSON.stringify(import.meta.resolve("@opencode/plugin"))};
+    await writeFile(join(project, "provider/index.ts"), `import {Plugin,Provider,Model} from "@opencode/plugin";
       export default Plugin.define({id:"open-diagram-author-fixture",async setup(ctx){ const id=Provider.ID.make("diagram-author");
       await ctx.provider.transform(e=>e.add({info:{...Provider.Info.empty(id),activation:"enabled",package:"@opencode/ai/providers/openai-compatible",settings:{baseURL:"http://127.0.0.1:${server.address().port}/v1"}},models:[Model.Info.default(id,Model.ID.make("author")),Model.Info.default(id,Model.ID.make("diagram-secondary"))]}));
       await ctx.session.hook("title",e=>{e.result="Author fixture"});await ctx.session.hook("retry",e=>{e.decision={retry:false}});

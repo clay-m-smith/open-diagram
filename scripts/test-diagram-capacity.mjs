@@ -10,8 +10,8 @@ await withV2Runtime(async (client, { temporary }) => {
   const project = join(temporary, "project")
   await mkdir(join(project, "fixture"), { recursive: true })
   await writeFile(join(project, "fixture/index.ts"), `
-import { Plugin } from ${JSON.stringify(import.meta.resolve("@opencode/plugin"))}
-import { Rpc } from ${JSON.stringify(import.meta.resolve("@opencode/plugin/rpc"))}
+import { Plugin } from "@opencode/plugin"
+import { Rpc } from "@opencode/plugin/rpc"
 import { z } from ${JSON.stringify(import.meta.resolve("zod"))}
 import { defineDiagramPlugin } from ${JSON.stringify(new URL("../src/diagram/server.ts", import.meta.url).href)}
 export default Plugin.define({ id: "open-diagram-capacity-fixture", async setup(ctx) {

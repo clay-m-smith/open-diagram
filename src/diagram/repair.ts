@@ -21,8 +21,10 @@ function nodesAt(value: unknown, view: number): unknown[] | undefined {
 }
 
 /** Narrow node faults need not regenerate every valid view, edge and explanation. */
-export function nodeRepair(text: string, error: DiagramOutputError, evidence: readonly Evidence[]) {
-  if (error.code !== "schema" || !error.issues.length || error.issues.length > 32) return
+export function nodeRepair(text: string, error: DiagramOutputError, evidence: readonly Evidence[], inheritedEvidence?: ReadonlySet<string>) {
+  // One malformed citation can produce several issues. Bound distinct targets
+  // below rather than forcing a full rewrite for an otherwise small repair.
+  if (error.code !== "schema" || !error.issues.length) return
   let draft: unknown
   try { draft = parseDiagramJSON(text) } catch { return }
   const views = object(draft)?.views
@@ -79,7 +81,7 @@ export function nodeRepair(text: string, error: DiagramOutputError, evidence: re
   const currentIDs = new Set(evidence.map(item => item.id))
   for (const [key, target] of targets) {
     const original = object(target.original)!
-    if (Object.hasOwn(original, "evidence")) continue
+    if (Object.hasOwn(original, "evidence") && !inheritedEvidence?.has(key)) continue
     const remove = Object.keys(original).filter(key => !Object.hasOwn(GraphSchema.shape.nodes.element.shape, key))
     if (remove.length > 1) continue
     if (remove.length) {
@@ -89,7 +91,11 @@ export function nodeRepair(text: string, error: DiagramOutputError, evidence: re
     const candidate = { ...original, evidence: [evidence[0].id] }
     for (const field of remove) Reflect.deleteProperty(candidate, field)
     if (!GraphSchema.shape.nodes.element.safeParse(candidate).success) continue
-    citations.set(key, { view: target.view, node: target.node, original, remove })
+    // Omitted patch fields came from the baseline, not this submission. Exclude
+    // inherited evidence from repair context; still require explicit citations.
+    const content = { ...original }
+    if (inheritedEvidence?.has(key)) delete content.evidence
+    citations.set(key, { view: target.view, node: target.node, original: content, remove })
     targets.delete(key)
   }
   const links = new Map<number, NonNullable<ReturnType<typeof architectureLinkRepair>>>()

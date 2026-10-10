@@ -41,7 +41,7 @@ the repository uses the plugin's production exporter—not a terminal screenshot
 ## Install and set up
 
 Requires **Node.js 22+** and **OpenCode 2.x (`>=2.0.7 <3`)**.
-Current verification used **OpenCode 2.0.11**. The range admits later 2.x releases;
+Current verification used **OpenCode 2.0.26**. The range admits later 2.x releases;
 it does not claim every future release has already been tested.
 The supported installation today is a local checkout; this repository is still
 marked `private` for npm publication.

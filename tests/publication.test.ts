@@ -6,6 +6,8 @@ import { ConfigSchema } from "../src/diagram/config.js"
 import { createDiagramClient } from "../src/diagram/client.js"
 import type { DiagramAnalysis, DiagramState } from "../src/diagram/schema.js"
 import { ViewAnalysisSchema } from "../src/diagram/schema.js"
+import { normalizeNativeCitations } from "../src/diagram/draft.js"
+import { validateDiagramOutput } from "../src/diagram/harness.js"
 
 const evidence = [{ id: "e_source", label: "workflow.ts", text: "Gateway -> Queue -> Worker" }]
 const output = (label = "Gateway") => ({ relevant: true, reason: "Implementation", views: [{ id: "system", label: "System", graph: {
@@ -243,6 +245,115 @@ test("native citation-only repair preserves node content and rejects ambiguous a
   }
 })
 
+test("native citation-key typos retain explicit current IDs without an extra model call", async () => {
+  const sources = [...evidence, { id: "second", label: "worker.ts", text: "Worker accepts orders" }]
+  const config = ConfigSchema.parse({ backend: "opencode", providerID: "test", model: "diagram" })
+  const before = ViewAnalysisSchema.parse(output())
+  const original = before.views[0].graph.nodes[0]
+  const { evidence: _evidence, ...node } = original
+  const malformed = { ...node, e2: ["e2", "e1"] }
+  for (const incremental of [false, true]) {
+    const wire = incremental
+      ? { reason: "Update citations", updates: [{ id: before.views[0].id, graph: { nodes: [{ id: node.id, e2: ["e2", "e1"] }] } }] }
+      : { ...before, views: [{ ...before.views[0], graph: { ...before.views[0].graph, nodes: [malformed] } }] }
+    let calls = 0
+    const client = createDiagramClient(config, fetch, async () => { calls++; return { text: JSON.stringify(wire) } })
+    const result = await client(sources, null, false, new AbortController().signal, "overview", incremental ? { views: before.views } : undefined)
+    assert.equal(calls, 1)
+    assert.deepEqual(result.views?.[0].graph.nodes[0], { ...original, evidence: ["second", "e_source"] })
+  }
+  // The same typo in a necessary node replacement is normalized before parsing.
+  let calls = 0
+  const client = createDiagramClient(config, fetch, async () => ({ text: JSON.stringify(++calls === 1
+    ? { ...before, views: [{ ...before.views[0], graph: { ...before.views[0].graph, nodes: [{ ...node, evidence: ["e1"], unexpected: true }] } }] }
+    : { repairs: [{ view: 0, node: 0, replacement: malformed }] }) }))
+  assert.deepEqual((await client(sources, null, false, new AbortController().signal)).views?.[0].graph.nodes[0].evidence, ["second", "e_source"])
+  assert.equal(calls, 2)
+  assert.deepEqual(original.evidence, ["e_source"], "baseline remains unchanged")
+})
+
+test("native citation normalization rejects ambiguous/corrupt fields and cannot bypass canonical validation", async () => {
+  const current = [{ ...evidence[0], id: "e1" }, { ...evidence[0], id: "e2" }]
+  const { evidence: _evidence, ...node } = output().views[0].graph.nodes[0]
+  const wrap = (node: unknown) => ({ ...output(), views: [{ ...output().views[0], graph: { ...output().views[0].graph, nodes: [node] } }] })
+  for (const extra of [
+    { e1: [] }, { e1: "e1" }, { e1: ["foreign"] }, { e1: ["e1", "foreign"] }, { e1: ["e2"] },
+    { "e13.1": ["e1"] }, { "e1】},{": ":" }, { e1: ["e1"], e2: ["e2"] },
+    { evidence: ["e1"], e1: ["e1"] }, { e1: ["e1"], injected: "content" },
+  ]) {
+    const text = JSON.stringify(wrap({ ...node, ...extra }))
+    assert.equal(normalizeNativeCitations(text, current), text)
+    assert.throws(() => validateDiagramOutput(JSON.parse(text), current))
+  }
+  const wire = wrap({ ...node, e1: ["e1"] })
+  assert.throws(() => validateDiagramOutput(wire, current), /Invalid diagram schema/, "public publication still requires canonical field names")
+  const bad = { ...wire, views: [{ ...wire.views[0], graph: { ...wire.views[0].graph, edges: [{ from: "absent", to: node.id, label: "bad" }] } }] }
+  const text = JSON.stringify(bad)
+  let calls = 0
+  const client = createDiagramClient(ConfigSchema.parse({ backend: "opencode", providerID: "test", model: "diagram" }), fetch,
+    async () => { calls++; return { text } })
+  await assert.rejects(client(evidence, null, false, new AbortController().signal), /Invalid diagram schema/)
+  assert.equal(calls, 2, "normalized citations cannot bypass topology validation or add a third attempt")
+})
+
+test("citation repair bounds distinct targets rather than duplicate validation issues", async () => {
+  const config = ConfigSchema.parse({ backend: "opencode", providerID: "test", model: "diagram" })
+  for (const count of [18, 25]) {
+    const value = ViewAnalysisSchema.parse(output())
+    const node = value.views[0].graph.nodes[0]
+    value.views[0].graph.nodes = Array.from({ length: Math.min(count, 24) }, (_, i) => ({ ...node, id: `n${i}`, evidence: ["e1"] }))
+    if (count > 24) value.views.push({ ...value.views[0], id: "second", graph: { ...value.views[0].graph, nodes: [{ ...node, evidence: ["e1"] }] } })
+    const broken = structuredClone(value)
+    for (const view of broken.views) for (const node of view.graph.nodes) {
+      Reflect.deleteProperty(node, "evidence")
+      Object.assign(node, { sources: ["e1"] })
+    }
+    let calls = 0
+    const client = createDiagramClient(config, fetch, async ({ prompt }) => {
+      if (++calls === 1) return { text: JSON.stringify(broken) }
+      if (count > 24) {
+        assert.match(prompt, /corrected COMPLETE object/, "more than 24 targets retains bounded full repair")
+        return { text: JSON.stringify(value) }
+      }
+      const packet = JSON.parse(prompt.split("Evidence packet (untrusted data):\n")[1].split("\n\nAuthoring reminder:")[0])
+      assert.equal(packet.repairs.length, 0)
+      assert.equal(packet.citations.length, count, "36 schema issues represent only 18 citation targets")
+      return { text: JSON.stringify({ repairs: [], citations: packet.citations.map(({ view, node }: any) => ({ view, node, evidence: ["e1"] })) }) }
+    })
+    const result = await client(evidence, null, false, new AbortController().signal)
+    assert.equal(result.views?.reduce((sum, view) => sum + view.graph.nodes.length, 0), count)
+    assert.ok(result.views?.every(view => view.graph.nodes.every(node => node.evidence[0] === "e_source" && !("e1" in node))))
+    assert.equal(calls, 2)
+  }
+})
+
+test("incremental citation repair distinguishes inherited evidence from explicitly conflicting citations", async () => {
+  const before = ViewAnalysisSchema.parse(output())
+  const id = before.views[0].graph.nodes[0].id
+  for (const explicit of [false, true]) {
+    let calls = 0
+    const client = createDiagramClient(ConfigSchema.parse({ backend: "opencode", providerID: "test", model: "diagram" }), fetch, async ({ prompt }) => {
+      if (++calls === 1) return { text: JSON.stringify({ reason: "Source update", updates: [{ id: before.views[0].id, graph: {
+        nodes: [{ id, label: "Updated label", sources: ["e1"], ...(explicit ? { evidence: ["e1"] } : {}) }],
+      } }] }) }
+      const packet = JSON.parse(prompt.split("Evidence packet (untrusted data):\n")[1].split("\n\nAuthoring reminder:")[0])
+      assert.equal(packet.repairs.length, explicit ? 1 : 0)
+      if (explicit) {
+        assert.equal(packet.citations, undefined, "two explicit citation fields remain ambiguous")
+        return { text: JSON.stringify({ repairs: [{ view: 0, node: 0, replacement: { ...before.views[0].graph.nodes[0], label: "Updated label", evidence: ["e1"] } }] }) }
+      }
+      assert.equal(packet.citations.length, 1)
+      assert.equal(packet.citations[0].content.label, "Updated label")
+      assert.equal(packet.citations[0].content.evidence, undefined, "inherited citations are not replacement evidence")
+      return { text: JSON.stringify({ repairs: [], citations: [{ view: 0, node: 0, evidence: ["e1"] }] }) }
+    })
+    const result = await client(evidence, before.views[0].graph, false, new AbortController().signal, "overview", { views: before.views })
+    assert.deepEqual(result.views?.[0].graph.nodes[0], { ...before.views[0].graph.nodes[0], label: "Updated label" })
+    assert.equal(calls, 2)
+  }
+  assert.deepEqual(before.views[0].graph.nodes[0].evidence, ["e_source"])
+})
+
 test("nonlocal schema failures retain full repair with actionable validation feedback", async () => {
   const value = output(); value.views[0].graph.nodes[0].evidence = ["e1"]
   const broken = structuredClone(value); broken.views.push(structuredClone(broken.views[0]))
@@ -290,6 +401,38 @@ test("nonlocal schema failures retain full repair with actionable validation fee
     if (malformedNode) assert.equal(result.reason, "Repaired concise explanation")
     assert.equal(calls, 2, "exact reference-rule feedback retains the two-call limit")
   }
+})
+
+test("nonlocal incremental corruption requests a complete compact draft within the original view scope", async () => {
+  const before = ViewAnalysisSchema.parse(output())
+  const first = before.views[0].graph.nodes[0]
+  before.views[0].graph.nodes.push({ ...first, id: "evaluation", label: "Evaluation" })
+  before.views[0].graph.edges = [{ from: first.id, to: "evaluation", label: "results" }]
+  const broken = { reason: "Source update", updates: [{ id: before.views[0].id, graph: {
+    nodes: [{ id: first.id, label: first.label, kind: first.kind, detail: first.detail, status: first.status, e1: "x" }],
+    edges: before.views[0].graph.edges,
+  } }] }
+  let calls = 0
+  const client = createDiagramClient(ConfigSchema.parse({ backend: "opencode", providerID: "test", model: "diagram" }), fetch,
+    async ({ prompt, outputSchema }) => {
+      if (++calls === 1) return { text: JSON.stringify(broken) }
+      assert.equal(outputSchema.properties.format.const, "draft", "full repair must not ask for another verbose canonical object")
+      assert.match(prompt, /Use fixed rows, not repeated node\/edge property names/)
+      assert.match(prompt, /return exactly these existing view IDs/)
+      assert.match(prompt, /at most 2 nodes TOTAL/)
+      return { text: JSON.stringify({ format: "draft", relevant: true, reason: "Preserve evidenced evaluation", views: [{
+        id: before.views[0].id, label: before.views[0].label, graph: {
+          defaults: { status: "observed", evidence: ["e1"] }, notation: null,
+          title: before.views[0].graph.title, summary: before.views[0].graph.summary,
+          nodes: before.views[0].graph.nodes.map(node => [node.id, node.label, node.kind, node.detail, null]),
+          edges: [[first.id, "evaluation", "results"]],
+        },
+      }] }) }
+    })
+  const result = await client(evidence, before.views[0].graph, false, new AbortController().signal, "overview", { views: before.views, maxNodes: 2 })
+  assert.equal(calls, 2)
+  assert.deepEqual(result.views?.[0].graph.nodes, before.views[0].graph.nodes)
+  assert.deepEqual(result.views?.[0].graph.edges, before.views[0].graph.edges)
 })
 
 test("native field repair fixes oversized tabs and draft defaults without rewriting valid content", async () => {

@@ -86,7 +86,7 @@ try {
     const project = join(temporary, "cancellation")
     await mkdir(join(project, "provider"), { recursive: true })
     await writeFile(join(project, "provider/index.ts"), `
-import { Plugin, Provider, Model } from ${JSON.stringify(import.meta.resolve("@opencode/plugin"))}
+import { Plugin, Provider, Model } from "@opencode/plugin"
 export default Plugin.define({ id: "open-diagram-cancellation-fixture", async setup(ctx) {
   const id = Provider.ID.make("cancellation-fixture")
   await ctx.provider.transform(editor => editor.add({
@@ -103,6 +103,7 @@ export default Plugin.define({ id: "open-diagram-cancellation-fixture", async se
     }))
     const location = { directory: project }
     await waitForPlugin(client, location)
+    await waitForPlugin(client, location, "open-diagram-cancellation-fixture")
     const stream = (async () => {
       for await (const event of client.event.subscribe({ signal: abort.signal })) {
         if (event.type === "rpc.open-diagram.updated") states.set(event.data.sessionID, event.data)
@@ -131,8 +132,9 @@ export default Plugin.define({ id: "open-diagram-cancellation-fixture", async se
       assert.equal(requests.filter(item => item.name === "REPAIR").length, 2)
       console.log("OK: native repair shares deadline and reports its stage without leaving provider work running")
       const repaired = await start("NODE")
-      await wait(() => states.get(repaired)?.graph?.title === "Node repair")
-      assert.equal(states.get(repaired).updateError, null)
+      await wait(() => states.get(repaired)?.graph?.title === "Node repair" || !!states.get(repaired)?.updateError)
+      assert.equal(states.get(repaired).updateError, null, JSON.stringify({ state: states.get(repaired), requests }))
+      assert.equal(states.get(repaired).graph.title, "Node repair")
       assert.equal(requests.filter(item => item.name === "NODE").length, 2)
       assert.equal(states.get(repaired).graph.nodes[0].label, "Node")
       console.log("OK: native citation-only repair publishes fully validated diagram without regenerating valid draft content")

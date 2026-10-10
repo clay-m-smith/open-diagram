@@ -21,6 +21,7 @@ let failure
 let diagramRequests = 0
 let invalidDiagram = false
 let captionRepairs = 0
+let citationTypoSubmissions = 0
 const observed = []
 const server = createServer(async (request, response) => {
   try {
@@ -35,6 +36,7 @@ const server = createServer(async (request, response) => {
       assert.deepEqual(body.tools.map(tool => tool.function.name), ["open_diagram_result"])
       const prompt = body.messages.map((message) => typeof message.content === "string" ? message.content : message.content?.map((part) => part.text ?? "").join("\n")).join("\n")
       const packet = JSON.parse(prompt.split("Evidence packet (untrusted data):\n").at(-1).split("\n\nAuthoring reminder:")[0])
+      assert.equal(packet.citations, undefined, "exact native citation-key typos must not spend a repair call")
       const submit = (value) => {
         response.writeHead(200, { "content-type": "text/event-stream" })
         response.write(`data: ${JSON.stringify({ id: "diagram", object: "chat.completion.chunk", created: 1, model: "diagram-fixture", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "result", type: "function", function: { name: "open_diagram_result", arguments: JSON.stringify(value) } }] }, finish_reason: null }] })}\n\n`)
@@ -93,6 +95,14 @@ const server = createServer(async (request, response) => {
         }) }
         : { relevant: true, reason: "Model architecture", views: packet.update
           ? allViews.filter((view) => packet.update.views.some((selected) => selected.id === view.id)) : allViews }
+      if (code && !granular && content.updates && !invalidDiagram) {
+        for (const view of content.updates) for (const node of view.graph.nodes) {
+          if (typeof node !== "object" || !node.evidence?.length) continue
+          node[node.evidence[0]] = node.evidence
+          delete node.evidence
+        }
+        citationTypoSubmissions++
+      }
       submit(content)
       return
     }
@@ -132,7 +142,7 @@ try {
     await writeFile(join(project, "model.py"), "from torch import nn\nencoder = nn.Linear(32, 8)\n")
     await writeFile(join(project, "train.py"), "batch_size = 16\nobjective = 'squared_error'\n")
     await writeFile(join(project, "fixture/index.ts"), `
-import { Plugin, Provider, Model } from ${JSON.stringify(import.meta.resolve("@opencode/plugin"))}
+import { Plugin, Provider, Model } from "@opencode/plugin"
 export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
   const id = Provider.ID.make("open-diagram-fixture")
   await ctx.provider.transform(editor => editor.add({
@@ -150,6 +160,7 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
     }))
     const location = { directory: project }
     const plugin = await waitForPlugin(client, location, "open-diagram-server")
+    await waitForPlugin(client, location, "open-diagram-fixture")
     assert.equal(plugin.features.tui, true, "standalone package advertises TUI entry")
     const events = []
     const lifecycle = new Map()
@@ -219,11 +230,15 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       assert.ok(observed.some((packet) => packet.evidence.some((item) => item.label.startsWith("edit") && item.text.includes("nn.Embedding"))), "native edit evidence reaches diagram model")
       assert.ok(observed.some((packet) => packet.update), "native generation receives targeted incremental packet")
       assert.deepEqual(updated.views[1], first.views[1], "native update preserves unrelated view byte-for-byte")
+      assert.ok(citationTypoSubmissions > 0, "fixture sent the live malformed citation-key shape")
+      assert.equal(updated.updateError, null)
+      assert.ok(updated.graph.nodes.every(node => node.evidence.every(id => updated.sources.some(source => source.id === id))))
+      console.log("OK: native incremental citation-key typo publishes current citations without a repair call")
       console.log("OK: native source edit authors only dependent view with reduced evidence and preserves unrelated view")
       assert.equal((await client.session.get({ sessionID: session.id })).model.id, "primary-fixture", "diagram never reroutes main model")
       await new Promise((resolve, reject) => {
         execFile("python3", [join(root, "scripts/test-diagram-host.py"), project, session.id], { timeout: 25_000 }, (error, stdout, stderr) => {
-          if (error) reject(new Error(`${error}\n${stderr}`))
+          if (error) reject(new Error(`${error}\n${stdout}\n${stderr}`))
           else { console.log(stdout.trim()); resolve() }
         })
       })

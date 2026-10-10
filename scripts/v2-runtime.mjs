@@ -20,6 +20,9 @@ export async function withV2Runtime(run) {
   const lifecycle = { stopped: false }
   try {
     for (const key of Object.keys(process.env)) if (key.startsWith("OPENCODE_")) delete process.env[key]
+    // Isolated acceptance must not depend on the external CLI update service.
+    // Inherited by fixture TUIs; restored with the rest of the environment below.
+    process.env.OPENCODE_DISABLE_AUTOUPDATE = "1"
     for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"]) {
       process.env[key] = join(temporary, key)
       await mkdir(process.env[key])

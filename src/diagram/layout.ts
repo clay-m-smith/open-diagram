@@ -277,9 +277,14 @@ async function solveDiagram(graph: DiagramGraph, options: DiagramLayoutOptions):
   // Network-simplex placement is expensive for dense parallel/return routes.
   // Keep those candidates on the baseline's fast placement algorithm rather
   // than delaying native navigation for several seconds per candidate set.
-  const placementStrategy = edges.length > nodes.length * 4 ? "BRANDES_KOEPF" : "NETWORK_SIMPLEX"
+  const dense = edges.length > nodes.length * 4
+  const placementStrategy = dense ? "BRANDES_KOEPF" : "NETWORK_SIMPLEX"
   for (const [placement, bound, strategy] of [["CENTER", 1, placementStrategy], ["HEAD", 1, placementStrategy],
     ["TAIL", 1, placementStrategy], ["HEAD", 2, placementStrategy], ["CENTER", 1, "SIMPLE"], ["HEAD", 1, "SIMPLE"]] as const) {
+    // Dense center-label alternatives fan out parallel routes into large graphs;
+    // their solve/cleanup cost delays every selection and width reflow. Keep the
+    // validated baseline plus cheap endpoint-label alternatives instead.
+    if (dense && placement === "CENTER") continue
     const candidate = structuredClone(input)
     Object.assign(candidate.layoutOptions!, { "elk.layered.layering.coffmanGraham.layerBound": String(bound),
       "elk.layered.nodePlacement.strategy": strategy })

@@ -9,6 +9,37 @@ const defaultsSchema = z.object({ status: GraphSchema.shape.nodes.element.shape.
 const object = (value: unknown): Record<string, any> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : undefined
 function fail(message: string): never { throw new DiagramOutputError("schema", `Invalid diagram draft: ${message}`) }
 
+/** Native wire typo only: retain explicitly supplied citations, never infer them. */
+export function normalizeNativeCitations(text: string, evidence: readonly Evidence[]): string {
+  let value: unknown
+  try { value = parseDiagramJSON(text) } catch { return text }
+  const root = object(value)
+  if (!root) return text
+  const currentIDs = new Set(evidence.map(item => item.id))
+  let changed = false
+  const normalize = (value: unknown) => {
+    const node = object(value)
+    if (!node || Object.hasOwn(node, "evidence")) return
+    const extra = Object.keys(node).filter(key => !Object.hasOwn(GraphSchema.shape.nodes.element.shape, key))
+    if (extra.length !== 1 || !/^e[1-9]\d*$/.test(extra[0])) return
+    const citations = GraphSchema.shape.nodes.element.shape.evidence.safeParse(node[extra[0]])
+    if (!citations.success || citations.data[0] !== extra[0] || citations.data.some(id => !currentIDs.has(id))) return
+    node.evidence = citations.data
+    delete node[extra[0]]
+    changed = true
+  }
+  // Exact authoring paths, not recursive rewriting of arbitrary JSON or notation.
+  for (const views of [root.views, root.updates]) {
+    if (!Array.isArray(views)) continue
+    for (const view of views) {
+      const nodes = object(object(view)?.graph)?.nodes
+      if (Array.isArray(nodes)) nodes.forEach(normalize)
+    }
+  }
+  if (Array.isArray(root.repairs)) for (const repair of root.repairs) normalize(object(repair)?.replacement)
+  return changed ? JSON.stringify(value) : text
+}
+
 /** Authoring syntax only. Public schemas, persistence and renderers stay canonical. */
 export function draftOutputSchema(evidence: readonly Evidence[]) {
   const schema = nativeDiagramOutputSchema() as Record<string, any>

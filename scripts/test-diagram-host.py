@@ -137,6 +137,7 @@ try:
     if stage != 8:
         raise AssertionError(f"Native TUI exited before interaction stage {stage}")
 except BaseException:
+    print(f"Rendered screen at interaction stage {stage}:\n{screen.text()}", file=sys.stderr)
     print(output.decode("utf-8", "replace")[-12000:], file=sys.stderr)
     raise
 finally:
