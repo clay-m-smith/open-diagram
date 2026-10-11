@@ -11,7 +11,7 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
   const storageKey = `diagram/native-author/v1/${digest(JSON.stringify([ctx.location.directory, ctx.location.project.id, ctx.location.workspaceID ?? null]))}`
   const saved = await ctx.storage.get(storageKey)
   let sessionID = typeof saved === "string" ? saved : undefined
-  let job: { input: Parameters<NativeGenerate>[0]; signal: AbortSignal; token: string; prompted: boolean; calls: number; value?: unknown; received: boolean; failed?: boolean; stop?: () => void } | undefined
+  let job: { input: Parameters<NativeGenerate>[0]; signal: AbortSignal; token: string; prompted: boolean; calls: number; value?: unknown; received: boolean; failed?: boolean; stop?: () => Promise<void> | undefined } | undefined
   const owns = (id: string) => id === sessionID
   await ctx.tool.transform((editor) => {
     if (editor.get(toolName)) throw new Error("Diagram result tool name is already registered")
@@ -21,7 +21,6 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
         if (!owns(tool.sessionID) || !job || job.received) throw new Error("No active diagram result request")
         job.signal.throwIfAborted()
         job.value = value; job.received = true
-        job.stop?.()
         return { content: "Diagram result received. Stop." }
       },
     })
@@ -32,10 +31,18 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
     job.signal.throwIfAborted()
     job.prompted = true
   })
-  await ctx.session.hook("context", (event) => {
+  await ctx.session.hook("context", async (event) => {
     if (!owns(event.sessionID)) { delete event.tools[toolName]; return }
-    // Stop the agent loop before another paid step, including post-tool narration.
-    if (!job || job.calls++ >= 1) throw new Error("Diagram author step completed")
+    if (!job) throw new Error("No active diagram result request")
+    // The previous step has persisted its tool results. Interrupt here, not
+    // inside execute (which marks a received result as a failed tool). Await
+    // interruption before dispatch so no post-tool narration call can escape.
+    if (job.calls++ >= 1) {
+      await job.stop?.()
+      // Fail closed if the host did not interrupt this hook, including an
+      // interrupt error. Never turn a shutdown failure into another paid call.
+      throw new Error("Diagram author step completed")
+    }
     job.signal.throwIfAborted()
     const tool = event.tools[toolName]
     if (!tool) throw new Error("Diagram result tool unavailable")
@@ -59,7 +66,7 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
   const generate: NativeGenerate = async (input, { signal }) => {
     signal.throwIfAborted()
     if (job) throw new Error("Diagram author is already active")
-    const active = { input, signal, token: randomUUID(), prompted: false, calls: 0, received: false, failed: false, value: undefined as unknown, stop: undefined as (() => void) | undefined }
+    const active = { input, signal, token: randomUUID(), prompted: false, calls: 0, received: false, failed: false, value: undefined as unknown, stop: undefined as (() => Promise<void> | undefined) | undefined }
     job = active
     let interrupted: Promise<void> | undefined
     let interruptError: unknown
@@ -67,8 +74,8 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
     let owned = false
     const stop = () => {
       if (!owned) return
-      // Attach rejection handling immediately, including interrupts from tool execution.
-      interrupted ??= ctx.session.interrupt({ sessionID: sessionID!, resume: false })
+      // Attach rejection handling immediately, including the continuation guard.
+      return interrupted ??= ctx.session.interrupt({ sessionID: sessionID!, resume: false })
         .then(() => {}, (error) => { interruptError = error })
     }
     active.stop = stop

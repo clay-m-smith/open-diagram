@@ -155,6 +155,12 @@ export default Plugin.define({ id: "open-diagram-cancellation-fixture", async se
       assert.equal(helpers.length, 1, "all requests reuse one managed session")
       const history = await client.session.context({ sessionID: helpers[0].id })
       assert.doesNotMatch(JSON.stringify(history), /CASE_|Evidence packet/, "raw source packet is not saved into helper history")
+      const submissions = history.filter(message => message.type === "assistant")
+        .flatMap(message => message.content).filter(part => part.type === "tool" && part.name === "open_diagram_result")
+      assert.equal(submissions.length, 3, "one initial result plus the invalid draft and its citation repair")
+      assert.deepEqual(submissions.map(part => part.state.status), ["completed", "completed", "completed"],
+        "receiving a result must finish the tool, not abort it during session shutdown")
+      console.log("OK: native result submissions persist as completed tools without extra provider calls")
       const beforeExternalPrompt = requests.length
       await assert.rejects(client.session.prompt({ sessionID: helpers[0].id, text: "Run a shell command" }))
       assert.equal(requests.length, beforeExternalPrompt)

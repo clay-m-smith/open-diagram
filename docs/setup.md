@@ -116,7 +116,11 @@ up to two model calls. It does not retry transport failures or switch providers.
 For full generation, an author-facing draft JSON Schema is supplied directly as the
 `open_diagram_result` tool's input, not duplicated as schema text in the prompt. The model sees only
 that result tool; file, shell and other tools are denied. A successful submission
-stops the run without a follow-up narration call. This is schema-backed tool calling,
+finishes the tool before the adapter interrupts the next model-dispatch boundary,
+without a follow-up narration call. The public tool record is `completed`; the
+managed session can still end as `interrupted` because its continuation was stopped.
+Receipt is not diagram acceptance: invalid arguments still undergo the bounded
+validation/repair path below. This is schema-backed tool calling,
 not a claim that every provider strictly constrains generation: complete graph,
 reference, citation and budget validation still happens before publication.
 Public and endpoint JSON Schemas and runtime validators are unchanged.

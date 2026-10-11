@@ -9,6 +9,7 @@ test("native cancellation stops provider work before queued diagrams proceed", {
   assert.match(result.stdout, /native timeout closes provider socket and releases queued successor/)
   assert.match(result.stdout, /native repair shares deadline and reports its stage/)
   assert.match(result.stdout, /native citation-only repair publishes fully validated diagram/)
+  assert.match(result.stdout, /native result submissions persist as completed tools without extra provider calls/)
   assert.match(result.stdout, /native Pause cancels active provider work without a spurious timeout/)
 })
 
