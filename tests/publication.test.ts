@@ -435,6 +435,30 @@ test("nonlocal incremental corruption requests a complete compact draft within t
   assert.deepEqual(result.views?.[0].graph.edges, before.views[0].graph.edges)
 })
 
+test("native row status and citation corruption uses explicit field repair without rewriting nodes", async () => {
+  const sources = [...evidence, { id: "second", label: "solver.ts", text: "Solver is planned" }]
+  const draft = { format: "draft", relevant: true, reason: "Solver", views: [{ id: "solver", label: "Solver", graph: {
+    title: "Solver", summary: "", defaults: { status: "observed", evidence: ["e1"] }, notation: null,
+    nodes: [["solver", "Solver", "algorithm", "Evaluates candidates", null, "status evidence", "evidence override"]], edges: [],
+  } }] }
+  for (const invalid of [false, true]) {
+    let calls = 0
+    const client = createDiagramClient(ConfigSchema.parse({ backend: "opencode", providerID: "test", model: "diagram" }), fetch, async ({ prompt }) => {
+      if (++calls === 1) return { text: JSON.stringify(draft) }
+      const packet = JSON.parse(prompt.split("Evidence packet (untrusted data):\n")[1].split("\n\nAuthoring reminder:")[0])
+      assert.deepEqual(packet.fields.map((f: any) => f.path.at(-1)), [5, 6])
+      assert.deepEqual(packet.evidence.map((e: any) => e.id), ["e1", "e2"])
+      return { text: JSON.stringify({ f0: "planned", f1: [invalid ? "foreign" : "e2"] }) }
+    })
+    const result = client(sources, null, false, new AbortController().signal)
+    if (invalid) await assert.rejects(result, /Unknown citation|Field repair|Invalid diagram/)
+    else assert.deepEqual((await result).views?.[0].graph.nodes[0], {
+      id: "solver", label: "Solver", kind: "algorithm", detail: "Evaluates candidates", status: "planned", evidence: ["second"],
+    })
+    assert.equal(calls, 2)
+  }
+})
+
 test("native field repair fixes oversized tabs and draft defaults without rewriting valid content", async () => {
   const config = ConfigSchema.parse({ backend: "opencode", providerID: "test", model: "diagram" })
   const sources = Array.from({ length: 7 }, (_, i) => ({ id: `source_${i}`, label: `Source ${i}`, text: `Stage ${i}` }))

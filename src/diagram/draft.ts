@@ -86,11 +86,13 @@ export function draftOutputSchema(evidence: readonly Evidence[]) {
     notation: graph.properties.notation, ...Object.fromEntries(Object.entries(graph.properties).filter(([key]) => key !== "notation")) }
   graph.required.unshift("defaults")
   const column = (title: string, schema: any) => ({ title, ...schema })
-  graph.properties.nodes.items = { type: "array", minItems: 5, maxItems: 6, items: false,
-    description: "Node row: [id, label, kind, detail, behavior, overrides?]. Null behavior means unsupported. Overrides may contain status, evidence and family annotation.",
+  graph.properties.nodes.items = { type: "array", minItems: 7, maxItems: 8, items: false,
+    description: "Node row: [id, label, kind, detail, behavior, status, evidence, annotation?]. Null behavior means unsupported. Null status/evidence explicitly inherits graph defaults.",
     prefixItems: [column("id", node.properties.id), column("label", node.properties.label), column("kind", node.properties.kind), column("detail", node.properties.detail),
       { title: "behavior", anyOf: [node.properties.behavior, { type: "null" }] },
-      { title: "overrides", anyOf: [{ type: "object", additionalProperties: false, properties: { status: node.properties.status, evidence: node.properties.evidence, annotation: node.properties.annotation } }, { type: "null" }] }],
+      { title: "status", anyOf: [node.properties.status, { type: "null" }] },
+      { title: "evidence", anyOf: [node.properties.evidence, { type: "null" }] },
+      { title: "annotation", anyOf: [node.properties.annotation, { type: "null" }] }],
   }
   graph.properties.edges.items = { type: "array", minItems: 3, maxItems: 4, items: false,
     description: "Edge row: [from, to, label, annotation?]. Node IDs, not numeric indices. The annotation belongs to this edge.",
@@ -136,8 +138,18 @@ export function expandDiagramDraft(text: string, evidence: readonly Evidence[]):
     if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) fail("nodes and edges must be arrays")
     graph.nodes = graph.nodes.map((node: unknown) => {
       if (!Array.isArray(node)) return node // Object drafts remain readable.
-      if (node.length < 5 || node.length > 6) fail("node row needs five fields and optional overrides")
+      if (node.length < 5 || node.length > 8) fail("node row needs seven fields and optional annotation")
       const [id, label, kind, detail, behavior] = node
+      if (node.length >= 7) {
+        const [, , , , , status, evidence, annotation] = node
+        if (status !== null && !GraphSchema.shape.nodes.element.shape.status.safeParse(status).success) fail("invalid node status column")
+        if (evidence !== null && (!GraphSchema.shape.nodes.element.shape.evidence.safeParse(evidence).success
+          || (evidence as string[]).some(id => !currentIDs.has(id)))) fail("invalid node evidence column")
+        return { id, label, kind, detail, ...(behavior === null ? {} : { behavior }),
+          ...(status === null ? {} : { status }), ...(evidence === null ? {} : { evidence }),
+          ...(annotation === undefined || annotation === null ? {} : { annotation }) }
+      }
+      // Older five/six-column drafts remain readable; malformed overrides do not.
       const overrides = node.length === 6 && node[5] !== null ? object(node[5]) : {}
       if (!overrides || Object.keys(overrides).some(key => !["status", "evidence", "annotation"].includes(key))) fail("invalid node overrides")
       return { id, label, kind, detail, ...(behavior === null ? {} : { behavior }), ...overrides }

@@ -56,7 +56,7 @@ test("native drafts expand all families losslessly with explicit defaults and co
   const schema = draftOutputSchema(notationEvidence)
   assert.deepEqual(schema.$defs.EvidenceIDs.items.enum, notationEvidence.map(item => item.id))
   assert.equal(schema.properties.format.const, "draft")
-  assert.equal(schema.properties.views.items.properties.graph.properties.nodes.items.prefixItems.length, 6)
+  assert.equal(schema.properties.views.items.properties.graph.properties.nodes.items.prefixItems.length, 8)
   const rows = (draft: any) => ({ ...draft,
     nodes: draft.nodes.map(({ id, label, kind, detail, behavior, ...overrides }: any) => [id, label, kind, detail, behavior ?? null, ...(Object.keys(overrides).length ? [overrides] : [])]),
     edges: draft.edges.map(({ from, to, label, annotation }: any) => [from, to, label, ...(annotation ? [annotation] : [])]),
@@ -69,6 +69,9 @@ test("native drafts expand all families losslessly with explicit defaults and co
     const before = JSON.stringify(draft)
     assert.deepEqual(read(draft), expected, family)
     assert.deepEqual(read(rows(draft)), expected, `${family} fixed rows`)
+    const columns = { ...rows(draft), nodes: draft.nodes.map(({ id, label, kind, detail, behavior, status, evidence, annotation }: any) =>
+      [id, label, kind, detail, behavior ?? null, status ?? null, evidence ?? null, ...(annotation ? [annotation] : [])]) }
+    assert.deepEqual(read(columns), expected, `${family} explicit status/citation columns`)
     const nullable = rows(draft)
     for (const node of nullable.nodes) if (node.length === 5) node.push(null)
     for (const edge of nullable.edges) if (edge.length === 3) edge.push(null)
