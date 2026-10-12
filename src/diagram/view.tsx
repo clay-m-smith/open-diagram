@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from "solid-js"
 import { useRenderer } from "@opentui/solid"
-import { parseColor, type BoxRenderable, type ColorInput, type ScrollBoxRenderable } from "@opentui/core"
+import { parseColor, ScrollBoxRenderable, type BoxRenderable, type ColorInput } from "@opentui/core"
 import { diagramTextWidth, diagramWireRuns, layoutDiagram, type DiagramLayout, type DiagramLayoutOptions } from "./layout.js"
 import { diagramArrowColor } from "./arrow-colors.js"
 import type { DiagramGraph } from "./schema.js"
@@ -46,25 +46,39 @@ export function CompactDiagram(props: {
   }
   const sources = createMemo(() => new Map(props.sources.map((source) => [source.id, source.label])))
   const [sourcesFor, setSourcesFor] = createSignal<string>()
-  const [solved, setSolved] = createSignal<{ graph: DiagramGraph; layout: DiagramLayout }>()
+  const graphContent = createMemo(() => JSON.stringify(props.graph))
+  const [solved, setSolved] = createSignal<{ graph: DiagramGraph; content: string; options: DiagramLayoutOptions; layout: DiagramLayout }>()
   const [working, setWorking] = createSignal(false)
   const [problem, setProblem] = createSignal<string>()
   const empty: DiagramLayout = { nodes: [], edges: [], width: 1, height: 1 }
-  const layout = createMemo(() => solved()?.graph === props.graph ? solved()!.layout : empty)
-  const initialLeft = () => layout().width > columns() ? Math.max(0, (layout().nodes[0]?.x ?? 0) - 1) : 0
-  const canvasWidth = () => Math.max(layout().width, columns() + initialLeft())
-  let pending: { graph: DiagramGraph; options: DiagramLayoutOptions } | undefined
+  const layout = createMemo(() => solved()?.content === graphContent() ? solved()!.layout : empty)
+  const canvasWidth = () => Math.max(layout().width, columns())
+  let pending: { graph: DiagramGraph; content: string; options: DiagramLayoutOptions } | undefined
   let running = false
   let scroll: ScrollBoxRenderable | undefined
   let reveal: string | undefined
-  let alignFirst = false
+  let resetOrigin = false
+  let followSelection = false
   const renderer = useRenderer()
-  const revealHorizontal = () => {
-    if (alignFirst && scroll) { scroll.scrollLeft = initialLeft(); alignFirst = false }
-    if (reveal) { scroll?.scrollChildIntoView(`open-diagram-node-${reveal}`); reveal = undefined }
+  const positionViewport = () => {
+    if (!scroll) return
+    // The diagram owns horizontal pan; its nearest scrolling parent is the
+    // native sidebar or panel's vertical viewport. Never touch chat scrolling.
+    let parent = scroll.parent
+    while (parent && !(parent instanceof ScrollBoxRenderable)) parent = parent.parent
+    if (resetOrigin) {
+      scroll.scrollTo({ x: 0, y: 0 })
+      if (parent instanceof ScrollBoxRenderable) parent.scrollTo({ x: 0, y: 0 })
+      resetOrigin = false
+    } else if (reveal) {
+      const id = `open-diagram-node-${reveal}`
+      scroll.scrollChildIntoView(id)
+      if (parent instanceof ScrollBoxRenderable) parent.scrollChildIntoView(id)
+    }
+    reveal = undefined
   }
-  renderer.on("frame", revealHorizontal)
-  onCleanup(() => { pending = undefined; renderer.off("frame", revealHorizontal) })
+  renderer.on("frame", positionViewport)
+  onCleanup(() => { pending = undefined; renderer.off("frame", positionViewport) })
   const solve = async () => {
     if (running) return
     running = true
@@ -75,9 +89,17 @@ export function CompactDiagram(props: {
       try {
         const result = await layoutDiagram(request.graph, request.options)
         if (disposed || pending) continue
-        alignFirst = !props.selected
-        setSolved({ graph: request.graph, layout: result })
-        reveal = props.selected ?? result.nodes[0]?.node.id
+        const previous = solved()
+        const changedGraph = previous?.content !== request.content
+        const selectionChanged = previous?.options.selected !== request.options.selected
+        if (changedGraph) { resetOrigin = true; followSelection = false }
+        else if (selectionChanged) followSelection = !!request.options.selected
+        // Passive cache/status updates must not pull the viewport back to an
+        // old selection. Explicit selection and its resize/source reflow may.
+        const reflow = previous?.options.columns !== request.options.columns
+          || JSON.stringify(previous?.options.sources) !== JSON.stringify(request.options.sources)
+        reveal = !changedGraph && followSelection && (selectionChanged || reflow) ? request.options.selected : undefined
+        setSolved({ ...request, layout: result })
         props.onLayout?.(result.nodes.map((box) => box.node))
         renderer.requestRender()
       } catch {
@@ -88,7 +110,7 @@ export function CompactDiagram(props: {
     if (!disposed) setWorking(false)
   }
   createEffect(() => {
-    pending = { graph: props.graph, options: { columns: columns(), selected: props.selected, changed: props.changed,
+    pending = { graph: props.graph, content: graphContent(), options: { columns: columns(), selected: props.selected, changed: props.changed,
       sourceControl: true, sources: sourcesFor() === props.selected && props.selected
         ? nodeEvidence(props.graph, props.selected).map((id) => sourceCaption(sources().get(id) ?? id)) : undefined } }
     setProblem(undefined); setWorking(true); void solve()

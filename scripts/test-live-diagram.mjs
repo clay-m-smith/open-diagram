@@ -345,6 +345,31 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       assert.deepEqual(hardware.views, hardwareViews, "actual native RPC validates and exposes notation payloads")
       assert.deepEqual((await rpc("get", { sessionID: session.id })).views, hardwareViews)
       assert.equal(diagramRequests, authorCalls, "manual notation publication is zero-call")
+      await new Promise((resolve, reject) => {
+        let output = ""
+        let updating = false
+        let publicationFailure
+        const child = execFile("python3", [join(root, "scripts/test-diagram-host.py"), project, session.id, "viewport"], { timeout: 15_000 }, (error, stdout, stderr) => {
+          if (publicationFailure) reject(publicationFailure)
+          else if (error) reject(new Error(`${error}\n${stdout}\n${stderr}`))
+          else { console.log(stdout.trim()); resolve() }
+        })
+        child.stdout.on("data", (data) => {
+          output += data
+          if (updating || !output.includes("READY: native viewport update")) return
+          updating = true
+          void (async () => {
+            const snapshot = await rpc("snapshot", { sessionID: session.id })
+            await rpc("publish", { sessionID: session.id, token: snapshot.token, analysis: { relevant: true,
+              reason: "Viewport update fixture", views: hardwareViews.map(view => view.id === "circuit"
+                ? { ...view, graph: { ...view.graph, title: "Updated viewport circuit" } } : view) } })
+          })().catch((error) => { publicationFailure = error; child.kill() })
+        })
+      })
+      const viewportSnapshot = await rpc("snapshot", { sessionID: session.id })
+      await rpc("publish", { sessionID: session.id, token: viewportSnapshot.token,
+        analysis: { relevant: true, reason: "Restore hardware fixtures", views: hardwareViews } })
+      assert.equal(diagramRequests, authorCalls, "viewport load, pan and update are zero-model operations")
       const beforeReload = await rpc("get", { sessionID: session.id })
       const configPath = join(project, "opencode.json")
       const nextConfig = JSON.parse(await readFile(configPath, "utf8"))

@@ -6,6 +6,7 @@ import json
 import os
 import pty
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from terminal_screen import TerminalScreen
 
 project, session = sys.argv[1:3]
 failure_mode = sys.argv[3:] == ["failure"]
+viewport_mode = sys.argv[3:] == ["viewport"]
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 55, 170, 0, 0))
 env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor")
@@ -26,21 +28,28 @@ child = subprocess.Popen(
 os.close(slave)
 output = bytearray()
 text = ""
-stage = 0
+stage = -1
 screen = TerminalScreen(170, 55)
 sidebar_left = 128
 ready_position = None
 ready_since = 0
+pan_remaining = 0
+next_pan = 0
 def click(position):
     x, y = position
     os.write(master, f"\x1b[<0;{x + 2};{y + 1}M\x1b[<0;{x + 2};{y + 1}m".encode())
+def terminate(_signal, _frame):
+    # execFile cancellation must unwind finally, not orphan the owned TUI.
+    raise SystemExit(128 + _signal)
+signal.signal(signal.SIGTERM, terminate)
 try:
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + (8 if viewport_mode else 20)
     while time.monotonic() < deadline:
-        readable, _, _ = select.select([master], [], [], 0.1)
+        wait = min(0.1, max(0, next_pan - time.monotonic())) if viewport_mode and stage == 1 and pan_remaining else 0.1
+        readable, _, _ = select.select([master], [], [], wait)
         # A stable final paint need not emit another frame. Advance initial
         # readiness on select timeouts too, without retrying the eventual click.
-        if readable or (stage == 0 and ready_position is not None):
+        if readable or (stage == 0 and ready_position is not None) or (viewport_mode and stage == 1):
             try:
                 data = os.read(master, 65536) if readable else b""
             except OSError as error:
@@ -61,6 +70,42 @@ try:
             # Hosts may paint adjacent words in separate cursor-positioned runs.
             # Assert the rendered screen, not concatenated incremental VT writes.
             text = screen.text()
+            if viewport_mode:
+                if stage == -1 and all(screen.find(label) for label in ["[Classic sidebar]", "[circuit]", "Context"]):
+                    sidebar_left = screen.find("View ")[0]
+                    click(screen.find("[circuit]"))
+                    stage = 0
+                elif stage == 0 and screen.find("I2C sensor circuit") and screen.find("┌─Controller board (sheet)"):
+                    position = (screen.find("I2C sensor circuit"), screen.find("┌─Controller board (sheet)"))
+                    if position != ready_position:
+                        ready_position, ready_since = position, time.monotonic()
+                    if time.monotonic() - ready_since < 0.15:
+                        continue
+                    assert screen.find("┌─Controller board (sheet)")[0] - sidebar_left == 1, "Initial circuit shows canvas left, not a node's lane"
+                    print("OK: actual native sidebar diagram loads at canvas top-left", flush=True)
+                    pan_remaining = 30
+                    stage = 1
+                elif stage == 1:
+                    if pan_remaining and time.monotonic() >= next_pan:
+                        x, y = sidebar_left + 12, 30
+                        os.write(master, f"\x1b[<65;{x};{y}M\x1b[<67;{x};{y}M".encode())
+                        pan_remaining -= 1
+                        next_pan = time.monotonic() + 0.03
+                    elif not pan_remaining and not screen.find("I2C sensor circuit") and not screen.find("Controller board (sheet)"):
+                        print("READY: native viewport update", flush=True)
+                        stage = 2
+                elif stage == 2 and screen.find("Updated viewport circuit") and screen.find("┌─Controller board (sheet)"):
+                    assert screen.find("┌─Controller board (sheet)")[0] - sidebar_left == 1, "Update resets horizontal canvas offset"
+                    print("OK: actual native sidebar diagram update resets bottom-right pan to top-left")
+                    stage = 8
+                    break
+                continue
+            if stage == -1 and all(screen.find(label) for label in ["[Classic sidebar]", "[Files]", "Context", "[Layers]" if failure_mode else "[Model]"]):
+                sidebar_left = screen.find("View ")[0]
+                assert "[Overview]" not in screen.text(sidebar_left), "Cached diagrams must not take over the default sidebar"
+                print("OK: actual native TUI starts on Classic sidebar with diagram tabs retained")
+                click(screen.find("[Layers]" if failure_mode else "[Model]"))
+                stage = 0
             if failure_mode:
                 if "Embedding 32" in screen.text() and "GELU" in screen.text() and "Field repair" in screen.text():
                     print("OK: actual native TUI retains cached layers beside failed-update warning")

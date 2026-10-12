@@ -75,7 +75,9 @@ Merge it into existing `plugins`; do not replace your other settings.
 
 Open OpenCode in that target project. For an already running instance, reload
 configuration with `opencode reload` from the target project and reopen the TUI
-if its plugin entry has not appeared. `/open-diagram` opens the diagram view.
+if its plugin entry has not appeared. The native **Classic sidebar** is selected
+by default, with diagram tabs still available. Click a diagram tab or run
+`/open-diagram` to open the diagram view.
 
 ### 3. Choose the model that draws your diagrams
 

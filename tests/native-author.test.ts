@@ -4,7 +4,7 @@ import type { Plugin } from "@opencode/plugin"
 import { registerNativeAuthor } from "../src/diagram/native.js"
 import { Effect } from "effect"
 
-test("native cancellation during prompt admission drains the newly admitted run before reuse", async () => {
+for (const rejectedAdmission of [false, true]) test(`native cancellation drains concurrent admission before reuse (${rejectedAdmission ? "reject" : "resolve"})`, async () => {
   const hooks = new Map<string, (event: any) => void>()
   const saved = new Map<string, any>()
   let start!: () => void, admit!: () => void
@@ -24,6 +24,7 @@ test("native cancellation during prompt admission drains the newly admitted run 
         start()
         await admission
         running = true
+        if (rejectedAdmission) throw new Error("Admission aborted after commit")
       },
       interrupt: async () => { interrupted++; running = false },
       wait: async () => { waitCalls++; assert.equal(running, false, "newly admitted provider must be interrupted before waiting") },
@@ -71,4 +72,41 @@ test("native deadline interrupts a stalled helper lookup before any prompt is ad
   abort.abort()
   await rejected
   assert.equal(finalized, true, "lookup finalizer must finish before releasing the generation slot")
+})
+
+test("native admission cancellation drains its finalizer before releasing generation ownership", async () => {
+  const hooks = new Map<string, (event: any) => void>()
+  let entered!: () => void
+  const entering = new Promise<void>((resolve) => { entered = resolve })
+  let finalized = false, admitted = false, interrupts = 0
+  const ctx = {
+    location: { directory: "/fixture", project: { id: "project" } },
+    storage: { get: async () => "ses_existing" },
+    tool: { transform: async () => {}, hook: async () => {} },
+    session: {
+      hook: async (name: string, hook: (event: any) => void) => { hooks.set(name, hook) },
+      get: async () => ({ location: { directory: "/fixture" }, projectID: "project", metadata: { openDiagram: true } }),
+      switchModel: async () => {}, wait: async () => {},
+      interrupt: async () => { interrupts++ },
+      prompt: async (_input: unknown, options?: { signal?: AbortSignal }) => {
+        entered()
+        return Effect.runPromise(Effect.never.pipe(
+          Effect.onInterrupt(() => Effect.sync(() => { finalized = true })),
+          Effect.tap(() => Effect.sync(() => { admitted = true })),
+        ), { signal: options?.signal })
+      },
+    },
+  } as unknown as Plugin.Context
+  const native = await registerNativeAuthor(ctx)
+  const abort = new AbortController()
+  const input = { model: { providerID: "fixture", id: "diagram" }, prompt: "source", outputSchema: { type: "object" } }
+  const generation = native.generate(input, { signal: abort.signal })
+  await entering
+  const rejected = assert.rejects(generation)
+  abort.abort()
+  await rejected
+  assert.equal(finalized, true)
+  assert.equal(admitted, false)
+  assert.ok(interrupts >= 2, "verified managed session is drained; no user session is touched")
+  await assert.rejects(native.generate(input, { signal: AbortSignal.abort() }), /abort/i)
 })

@@ -45,6 +45,8 @@ export async function withV2Runtime(run) {
     const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })
     return await run(client, { temporary, endpoint, lifecycle })
   } catch (error) {
+    // Preserve the first exercise failure even if final cleanup also fails.
+    console.error("Private V2 runtime exercise failed:", error)
     const log = await readFile(join(temporary, "XDG_DATA_HOME", "opencode", "log", "opencode.log"), "utf8").catch(() => "")
     if (log) console.error(log.split("\n").filter((line) => /level=(ERROR|WARN)/.test(line)).join("\n"))
     throw error

@@ -490,7 +490,6 @@ function DiagramPanel(props: {
         <DiagramContent ctx={ctx} state={state()} problem={monitor.problem()} tab={props.tab()} selected={selected()}
           select={(id) => { props.panel.focus(); select(id) }} onLayout={(graph, nodes) => {
             setArranged({ graph, nodes })
-            if (selected()) { reveal = selected(); renderer.requestRender() }
           }} />
       </scrollbox>
     </box>
@@ -579,7 +578,7 @@ export default Plugin.define({
     const exportTheme = (): ExportTheme => preferences.exportTheme === "dark" || preferences.exportTheme === "light" ? preferences.exportTheme : "system"
     const monitor = createDiagramMonitor(ctx.client.rpc(DiagramRpc))
     const removeHostEvents = bindDiagramMonitor(monitor, ctx.data)
-    const tabs = new Map<string, string>()
+    const [tabs, updateTabs] = ctx.storage.memory("diagram-tabs", { initial: {} as Record<string, string> })
     const [tab, setTab] = createSignal<string>()
     const [node, setNode] = createSignal<string>()
     let replaceSidebar: (() => void) | undefined
@@ -610,8 +609,9 @@ export default Plugin.define({
     const choose = (id: string) => {
       const session = monitor.session()
       if (session) {
-        if (tabs.size >= 64) tabs.delete(tabs.keys().next().value!)
-        tabs.set(diagramSessionKey(session), id)
+        // Small explicit choices live for this TUI lifetime, independently of
+        // the bounded graph cache. Cache eviction must not change user intent.
+        updateTabs((draft) => { draft[diagramSessionKey(session)] = id })
       }
       setTab(id)
       setNode(undefined)
@@ -765,12 +765,12 @@ export default Plugin.define({
           const key = session ? diagramSessionKey(session) : undefined
           if (key !== selection) {
             selection = key
-            setTab(key ? tabs.get(key) : undefined)
+            // Keep the native sidebar until this session's view is explicitly chosen.
+            setTab(key ? tabs[key] ?? "$sidebar" : undefined)
             setNode(undefined)
           }
           const state = monitor.state()
-          const replace = !!key && preferences.sidebarVisible && tab() !== "$sidebar" && !!state
-            && (state.relevant || tab() !== undefined)
+          const replace = !!key && preferences.sidebarVisible && tab() !== undefined && tab() !== "$sidebar" && !!state
           if (replace && !replaceSidebar) replaceSidebar = ctx.ui.slot({ replace: "sidebar.content", render: (input) =>
             <Show when={monitor.state()?.sessionID === input.sessionID}>
               <DepthTabs ctx={ctx} state={monitor.state()} control={control} />
@@ -838,7 +838,6 @@ export default Plugin.define({
       removeSidebar()
       removePanel()
       removeApp()
-      tabs.clear()
       resumeModes.clear()
     }
     return cleanup

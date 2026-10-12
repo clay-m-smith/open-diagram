@@ -5,6 +5,15 @@ For installation and selecting the diagram author, start with
 
 ## Native controls
 
+Each session starts on OpenCode's **Classic sidebar**, with diagram tabs available
+above it. Cached diagrams and live updates do not switch the view automatically.
+Click a diagram tab or run `/open-diagram` to view it. Explicit tab choices are
+remembered per session while the TUI is running; restarting the TUI returns to
+Classic sidebar. This does not change the host's sidebar visibility preference.
+When a diagram loads or its content changes, its viewport starts at the top-left
+of the canvas. Unchanged snapshots preserve manual panning; selecting a node
+still scrolls it into view.
+
 The toolbar groups **View**, **Depth**, **Tools**, and **Export** consistently in
 the sidebar and expanded panel. Active selectors are bold and underlined.
 Controls wrap on narrow panels; long captions use grapheme-safe ellipsis.
@@ -64,7 +73,7 @@ architecture ports remain fixed. Arrowheads retain a straight approach, and labe
 stay beside their own routes, clear of cards and other wires.
 Cycles, disconnected nodes, branches and joins remain explicit. Width is a
 preference, not a clipping constraint: dense graphs can still scroll horizontally.
-Wide diagrams open on the first block at the left edge; smaller diagrams are not
+Wide diagrams open at the canvas's top-left; smaller diagrams are not
 centered across the panel. Panning still reaches the complete routed graph.
 Keyboard navigation follows visual reading order. Sequence labels use local,
 wrapped gaps rather than widening every participant slot. Sequence and timing
@@ -114,6 +123,11 @@ explicit publication, or an automatic-backend Refresh.
 Collection failures mark retained diagrams stale. Unreadable persistence blocks
 initialization instead of replacing saved graphs or Pause with writable defaults.
 An empty context is not treated as a source deletion.
+
+With the OpenCode-model backend, plugin reload cancels and drains pending native
+session admission and active generation before a replacement plugin reuses the
+managed author session. This also applies to normal configuration reloads, not
+only plugin development. Your chat session and its model are not interrupted.
 
 ## Copy and save
 

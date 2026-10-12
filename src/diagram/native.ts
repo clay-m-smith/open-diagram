@@ -103,7 +103,7 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
           await ctx.session.create({ id: sessionID, agent: "general", title: "Diagram author (managed)", model: input.model,
             metadata: { openDiagram: true }, permissions: [
               { action: "*", resource: "*", effect: "deny" }, { action: toolName, resource: "*", effect: "allow" },
-            ] })
+            ] }, { signal })
         } catch (error) { sessionID = undefined; throw error }
         owned = true
         await ctx.storage.set(storageKey, sessionID)
@@ -118,11 +118,8 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
       }
       if (signal.aborted) { stop(); signal.throwIfAborted() }
       admitted = true
-      await ctx.session.prompt({ sessionID, text: "Submit the requested diagram.", metadata: { openDiagram: active.token } })
-      // Explicit interrupt is required: the V2 Promise adapter ignores request signals.
-      // An abort during admission may have interrupted an idle session; drain that
-      // interrupt, then interrupt the newly admitted run as well.
-      if (signal.aborted) { await interrupted; interrupted = undefined; stop() }
+      await ctx.session.prompt({ sessionID, text: "Submit the requested diagram.", metadata: { openDiagram: active.token } }, { signal })
+      signal.throwIfAborted()
       await ctx.session.wait({ sessionID }, { signal })
       signal.throwIfAborted()
       if (active.failed || !active.calls) throw new Error("Diagram author request failed")
@@ -132,6 +129,10 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
       try {
         if (owned) stop()
         await interrupted
+        // Admission can commit concurrently with cancellation, even when its
+        // Effect rejects. The first interrupt may have hit an idle session.
+        // Re-interrupt after admission finalizers drain, before releasing job.
+        if (admitted && signal.aborted) { interrupted = undefined; stop(); await interrupted }
         if (admitted) await ctx.session.wait({ sessionID: sessionID! })
         if (interruptError) throw interruptError
       } finally { job = undefined }

@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 import type { Data, KeymapCommand, KeymapLayer, PanelInput, SlotClaim } from "@opencode/plugin/tui/context"
 import { testRender } from "@opentui/solid"
-import { RGBA, TextAttributes } from "@opentui/core"
+import { RGBA, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { batch, createComponent, createSignal, Show } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 
@@ -810,6 +810,7 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const [panel, setPanel] = createSignal<{ name: string; sessionID: string }>()
     const [fullscreen, setFullscreen] = createSignal(false)
     const [preferences, updatePreferences] = createStore<{ sidebarVisible: boolean; exportTheme?: "system" | "dark" | "light" }>({ sidebarVisible: true })
+    const [tabMemory, updateTabMemory] = createStore<Record<string, string>>({})
     const [themeText, setThemeText] = createSignal<string | RGBA>("#eeeeee")
     const slots: SlotClaim[] = []
     const [replacement, setReplacement] = createSignal<SlotClaim>()
@@ -852,10 +853,14 @@ if (!process.execArgv.includes("--conditions=browser")) {
       },
       events: { on: (_name, listener) => { listeners.add(listener); return () => { listeners.delete(listener) } } },
     }
-    const cleanup = await plugin.setup({
+    const context = {
       get location() { return selected() ? transportLocation(selected()!) : undefined },
       client: { rpc: (definition: { id: string }) => { assert.equal(definition.id, "open-diagram"); return rpc } },
-      storage: { store: (key: string, options: { initial: object }) => {
+      storage: { memory: (key: string, options: { initial: object }) => {
+        assert.equal(key, "diagram-tabs")
+        assert.deepEqual(options.initial, {})
+        return [tabMemory, (mutate: (draft: typeof tabMemory) => void) => updateTabMemory(produce(mutate))]
+      }, store: (key: string, options: { initial: object }) => {
         assert.equal(key, "diagram-preferences")
         assert.deepEqual(options.initial, { sidebarVisible: true, exportTheme: "system" })
         return [preferences, async (mutate: (draft: typeof preferences) => void) => {
@@ -898,7 +903,8 @@ if (!process.execArgv.includes("--conditions=browser")) {
           close: () => { setPanel(undefined) },
         },
       },
-    })
+    }
+    let cleanup = await plugin.setup(context)
     t.after(() => cleanup())
     const app = slots.find((slot) => slot.append === "app")!
     const panelSlot = slots.find((slot) => slot.append === "session.panel")!
@@ -918,26 +924,52 @@ if (!process.execArgv.includes("--conditions=browser")) {
       renderPanel: () => panelSlot.render(input as never),
     }), { width: 80, height: 50 })
     t.after(() => rendered.renderer.destroy())
-    const flush = async () => {
-      await settle(); await rendered.flush()
+    const flush = async (target = rendered) => {
+      await settle(); await target.flush()
       // Renderer flush drains microtasks only; the real ELK worker needs event
       // loop turns, not more synchronous frame passes.
       const deadline = Date.now() + 5_000
-      while (rendered.renderer.root.findDescendantById("open-diagram-layout-pending")) {
+      while (target.renderer.root.findDescendantById("open-diagram-layout-pending")) {
         assert.ok(Date.now() < deadline, "ELK layout completed")
         await new Promise((resolve) => setTimeout(resolve, 10))
-        await rendered.flush()
+        await target.flush()
       }
-      await rendered.flush()
+      await target.flush()
     }
     const run = async (id: string, argument?: string) => { await commands.get(id)!.run(argument); await flush() }
-    await flush()
-    assert.equal(opened.length, 0, "default uses sidebar rather than opening a wide panel")
-    assert.ok(slots.some((slot) => slot.before === "sidebar.content"), "tab anchor survives content replacement")
-    assert.ok(slots.some((slot) => slot.replace === "sidebar.content"), "diagram uses reversible native slot")
-    assert.match(rendered.captureCharFrame(), /Branched pipeline/)
+    const graphViewport = () => {
+      const scroll = rendered.renderer.root.findDescendantById("open-diagram-graph-scroll")
+      assert.ok(scroll instanceof ScrollBoxRenderable)
+      return scroll
+    }
+    const contentViewport = () => {
+      let parent = graphViewport().parent
+      while (parent && !(parent instanceof ScrollBoxRenderable)) parent = parent.parent
+      assert.ok(parent instanceof ScrollBoxRenderable)
+      return parent
+    }
+    const clickTab = async (label: string) => {
+      const lines = rendered.captureCharFrame().split("\n")
+      const row = lines.findIndex((line) => line.includes(`[${label}]`))
+      assert.ok(row >= 0, `${label} tab is visible`)
+      await rendered.mockMouse.click(lines[row].indexOf(`[${label}]`) + 2, row)
+      await flush()
+    }
     const toolbarSpan = (label: string) => rendered.captureSpans().lines.flatMap((line) => line.spans).find((span) => span.text.includes(`[${label}]`))!
     const selectedStyle = TextAttributes.BOLD | TextAttributes.UNDERLINE
+    await flush()
+    assert.equal(opened.length, 0, "startup never opens a diagram panel")
+    assert.ok(slots.some((slot) => slot.before === "sidebar.content"), "tab anchor survives content replacement")
+    assert.equal(replacement(), undefined, "cached relevant diagrams must not replace the native sidebar on startup")
+    assert.match(rendered.captureCharFrame(), /Native sidebar contents/)
+    assert.equal(toolbarSpan("Classic sidebar").attributes & selectedStyle, selectedStyle)
+    for (const label of ["Model", "Files"]) assert.equal(toolbarSpan(label).attributes & selectedStyle, 0, "diagram tabs remain visible but inactive")
+    emit({ ...states.get(alpha.id)!, revision: 2 })
+    await flush()
+    assert.equal(replacement(), undefined, "live diagram updates cannot steal the default sidebar")
+    await clickTab("Model")
+    assert.ok(slots.some((slot) => slot.replace === "sidebar.content"), "diagram uses reversible native slot")
+    assert.match(rendered.captureCharFrame(), /Branched pipeline/)
     assert.equal(toolbarSpan("Model").attributes & selectedStyle, selectedStyle, "active view has a non-color-only indicator")
     assert.equal(toolbarSpan("Overview").attributes & selectedStyle, selectedStyle, "depth uses the same active style")
     assert.equal(toolbarSpan("Files").attributes & selectedStyle, 0)
@@ -965,13 +997,6 @@ if (!process.execArgv.includes("--conditions=browser")) {
     await run("open-diagram-export-theme")
     assert.equal(preferences.exportTheme, "system")
     assert.equal(readCount, 1, "export theme controls neither fetch nor regenerate")
-    const clickTab = async (label: string) => {
-      const lines = rendered.captureCharFrame().split("\n")
-      const row = lines.findIndex((line) => line.includes(`[${label}]`))
-      assert.ok(row >= 0, `${label} tab is visible`)
-      await rendered.mockMouse.click(lines[row].indexOf(`[${label}]`) + 2, row)
-      await flush()
-    }
     await clickTab("Files")
     assert.equal(toolbarSpan("Files").attributes & selectedStyle, selectedStyle)
     assert.equal(toolbarSpan("Model").attributes & selectedStyle, 0, "old view clears its selected style")
@@ -1091,11 +1116,14 @@ if (!process.execArgv.includes("--conditions=browser")) {
     assert.equal(panel(), undefined, "host dismissal suppresses automatic reopening")
     batch(() => { setSelected(beta.id); setPanel(undefined) })
     await flush()
+    assert.match(rendered.captureCharFrame(), /Native sidebar contents/, "unvisited sessions also default to Classic sidebar")
+    assert.equal(replacement(), undefined)
     await run("open-diagram", "panel")
     assert.match(rendered.captureCharFrame(), /Beta pipeline/)
     batch(() => { setSelected(alpha.id); setPanel(undefined) })
     await flush()
     assert.equal(panel(), undefined, "dismissal survives visiting another session")
+    assert.match(rendered.captureCharFrame(), /Features v2/, "explicit diagram selection survives a session revisit")
     await run("open-diagram", "panel")
     assert.match(rendered.captureCharFrame(), /Features v2/)
     const cachedVisible = states.get(alpha.id)!
@@ -1350,10 +1378,18 @@ if (!process.execArgv.includes("--conditions=browser")) {
     for (let tick = 0; tick < 160; tick++) await rendered.mockMouse.scroll(4, 25, "down")
     await flush()
     assert.match(rendered.captureCharFrame(), /Visible node 24/, "the final node is reachable by scrolling")
+    assert.ok(contentViewport().scrollTop > 0)
+    emit(nativeReady(beta.id, 2, { ...large, title: "Updated large diagram" }))
+    await flush()
+    assert.equal(contentViewport().scrollTop, 0, "updated diagrams return to the top instead of retaining the bottom viewport")
+    assert.match(rendered.captureCharFrame(), /Visible node 1\b/)
     for (let index = 0; index < 24; index++) {
       await run("j")
       assert.match(rendered.captureCharFrame(), new RegExp(`Visible node ${index + 1}\\b`), "keyboard selection enters viewport")
     }
+    emit(nativeReady(beta.id, 2, { ...large, title: "Updated while last node selected" }))
+    await flush()
+    assert.equal(contentViewport().scrollTop, 0, "a retained selection cannot repan a newly updated graph to the bottom")
     for (let index = 22; index >= 0; index--) {
       await run("k")
       assert.match(rendered.captureCharFrame(), new RegExp(`Visible node ${index + 1}\\b`), "reverse keyboard selection enters viewport")
@@ -1376,8 +1412,8 @@ if (!process.execArgv.includes("--conditions=browser")) {
       ...Array.from({ length: 40 }, (_, index) => ({ from: "cc", to: "aa", label: `route ${index}` }))] }
     emit(nativeReady(beta.id, 4, dense))
     await flush()
-    const firstRow = rendered.captureCharFrame().split("\n").find(line => line.includes("𠮷"))!
-    assert.ok(firstRow && firstRow.indexOf("𠮷") <= 4, "overflowing diagrams open with first block against the left viewport edge")
+    assert.equal(graphViewport().scrollLeft, 0, "new diagrams start at canvas left, not the first node's possibly right-hand lane")
+    assert.equal(contentViewport().scrollTop, 0)
     const denseLayout = await layoutDiagram(dense, { columns: 80 })
     assert.ok(denseLayout.width > 80)
     assert.ok(denseLayout.nodes.every((box) => box.width <= 34), "dense ports do not stretch compact cards")
@@ -1391,6 +1427,10 @@ if (!process.execArgv.includes("--conditions=browser")) {
     const afterPan = rendered.captureCharFrame()
     assert.notEqual(afterPan, beforePan)
     assert.match(afterPan, /[┌┐└┘]/, "horizontal input reveals orthogonal return routing")
+    const manualLeft = graphViewport().scrollLeft
+    emit(structuredClone(states.get(beta.id)!))
+    await flush()
+    assert.equal(graphViewport().scrollLeft, manualLeft, "unchanged snapshots do not undo manual panning")
     await run("k")
     // Same-selection navigation changes scrolling after the frame, not Solid
     // state; observe the next painted frame rather than the pre-scroll buffer.
@@ -1413,6 +1453,23 @@ if (!process.execArgv.includes("--conditions=browser")) {
     await rendered.mockMouse.click(wideFrame.split("\n")[wideRow].indexOf("𠮷") + 1, wideRow)
     await flush()
     assert.doesNotMatch(rendered.captureCharFrame(), /Raw inputs/, "resized cards remain interactive: clicking selection collapses details")
+    graphViewport().scrollLeft = graphViewport().scrollWidth
+    contentViewport().scrollTop = contentViewport().scrollHeight
+    emit(nativeReady(beta.id, 4, { ...dense, title: "Updated dense diagram" }))
+    await flush()
+    assert.equal(graphViewport().scrollLeft, 0, "content updates reset horizontal pan")
+    assert.equal(contentViewport().scrollTop, 0, "content updates reset vertical pan")
+    await run("open-diagram", "sidebar")
+    await clickTab("Model")
+    assert.equal(graphViewport().scrollLeft, 0, "sidebar diagram loads at canvas left")
+    assert.equal(contentViewport().scrollTop, 0)
+    graphViewport().scrollLeft = graphViewport().scrollWidth
+    contentViewport().scrollTop = contentViewport().scrollHeight
+    emit(nativeReady(beta.id, 4, { ...dense, title: "Updated sidebar diagram" }))
+    await flush()
+    assert.equal(graphViewport().scrollLeft, 0, "sidebar update resets horizontal pan")
+    assert.equal(contentViewport().scrollTop, 0, "sidebar update resets its native scrolling parent")
+    await run("open-diagram", "panel")
     const beforeNotations = { reads: readCount, controls: controls.length }
     setPanelWidth(200)
     rendered.resize(200, 85)
@@ -1659,6 +1716,27 @@ if (!process.execArgv.includes("--conditions=browser")) {
       assert.ok(replacement(), "explicit open selects Diagram even without an accepted graph")
       assert.equal(panel(), undefined)
     }
+    // Explicit tab intent outlives eviction from the 64-session graph cache.
+    const chosenIDs = Array.from({ length: 65 }, (_, index) => `tab-choice-${index}`)
+    for (const [index, id] of chosenIDs.entries()) {
+      sessions.push({ ...sessions[1], id })
+      states.set(id, nativeReady(id))
+      batch(() => { setSelected(id); setPanel(undefined) })
+      await flush()
+      if (index === 0) await clickTab("Files")
+      else await run("open-diagram", "sidebar")
+    }
+    const revisitFirst = async () => {
+      batch(() => { setSelected(chosenIDs[0]); setPanel(undefined) })
+      await flush()
+      assert.equal(toolbarSpan("Files").attributes & selectedStyle, selectedStyle, "oldest explicit tab survives more than 64 session choices")
+      assert.match(rendered.captureCharFrame(), /Repository view/)
+    }
+    await revisitFirst()
+    batch(() => { setSelected(chosenIDs.at(-1)); setPanel(undefined) })
+    await flush()
+    await clickTab("Model")
+    await revisitFirst()
     batch(() => { setSelected(undefined); setPanel(undefined) })
     await flush()
     const readsBefore = readCount
@@ -1669,5 +1747,20 @@ if (!process.execArgv.includes("--conditions=browser")) {
     assert.equal(listeners.size, 0)
     assert.equal(hostListeners.size, 0)
     assert.equal(new Set(removed).size, slots.length, "all dynamic and fixed slots disposed")
+    rendered.renderer.destroy()
+    const oldSlotCount = slots.length
+    setSelected(chosenIDs[0])
+    cleanup = await plugin.setup(context)
+    const newSlots = slots.slice(oldSlotCount)
+    const reloaded = await testRender(() => createComponent(Host, {
+      app: newSlots.find((slot) => slot.append === "app")!, panel, sessionID: selected,
+      header: newSlots.find((slot) => slot.before === "sidebar.content")!, replacement,
+      renderPanel: () => newSlots.find((slot) => slot.append === "session.panel")!.render(input as never),
+    }), { width: 80, height: 50 })
+    t.after(() => reloaded.renderer.destroy())
+    await flush(reloaded)
+    const reloadedFiles = reloaded.captureSpans().lines.flatMap((line) => line.spans).find((span) => span.text.includes("[Files]"))!
+    assert.equal(reloadedFiles.attributes & selectedStyle, selectedStyle, "native memory retains explicit tab across TUI-plugin cleanup/setup in same TUI")
+    assert.match(reloaded.captureCharFrame(), /Repository view/)
   })
 }

@@ -46,7 +46,7 @@ child = subprocess.Popen(["opencode", project, "--session", session], stdin=slav
 os.close(slave)
 screen = TerminalScreen(170, 55)
 output = bytearray()
-stage = 0
+stage = -1
 png_path = os.path.join(project, "native-diagram.png")
 svg_path = os.path.join(project, "native-diagram.svg")
 
@@ -107,7 +107,13 @@ try:
                 os.write(master, b"\x1b[1;1R")
             if b"\x1b]11;?" in data:
                 os.write(master, b"\x1b]11;rgb:1a1a/1b1b/2626\x07")
-        if stage == 0 and all(screen.find(label) for label in ["[PNG]", "[SVG]", "[Save]", "GELU"]):
+        if stage in (-1, -2) and all(screen.find(label) for label in ["[Layers]", "[Files]", "[Classic sidebar]", "Context"]):
+            assert not screen.find("[PNG]"), "Starting a TUI keeps native sidebar contents, even after previously selecting a diagram"
+            if stage == -2:
+                print("OK: native TUI restart restores Classic sidebar while retaining diagram tabs")
+            click("[Layers]")
+            stage = 0 if stage == -1 else 14
+        elif stage == 0 and all(screen.find(label) for label in ["[PNG]", "[SVG]", "[Save]", "GELU"]):
             click("[SVG]")
             stage = 1
         elif stage == 1:
@@ -182,7 +188,7 @@ try:
             os.close(slave)
             screen = TerminalScreen(170, 55)
             output.clear()
-            stage = 14
+            stage = -2
         elif stage == 14 and screen.find("[Theme: Light]") and export_idle() and "GELU" in screen.text():
             os.unlink(clipboard_path)
             click("[SVG]")

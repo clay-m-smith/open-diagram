@@ -2,6 +2,14 @@ import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import test from "node:test"
 
+test("native plugin reload drains pending admission without blocking folder RPC or replacement generation", { timeout: 30000 }, () => {
+  const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env
+  const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/test-diagram-reload.mjs"], { env, encoding: "utf8", timeout: 25000 })
+  assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`)
+  assert.match(result.stdout, /real engine cleanup drains pending native prompt admission; reload finishes and folder RPC recovers without provider dispatch/)
+  assert.match(result.stdout, /aborted old generation cannot dispatch later or interrupt replacement/)
+})
+
 test("native cancellation stops provider work before queued diagrams proceed", { timeout: 30000 }, () => {
   const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env
   const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/test-diagram-cancellation.mjs"], { env, encoding: "utf8", timeout: 25000 })
@@ -18,6 +26,10 @@ test("live diagrams follow actual OpenCode V2 prompt and native edit hooks throu
   const result = spawnSync(process.execPath, ["--conditions=browser", "--import", "tsx", "scripts/test-live-diagram.mjs"], { env, encoding: "utf8", timeout: 60_000 })
   assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`)
   assert.match(result.stdout, /actual OpenCode TUI loaded standalone bridge/)
+  assert.match(result.stdout, /actual native TUI starts on Classic sidebar with diagram tabs retained/)
+  assert.match(result.stdout, /native TUI restart restores Classic sidebar while retaining diagram tabs/)
+  assert.match(result.stdout, /actual native sidebar diagram loads at canvas top-left/)
+  assert.match(result.stdout, /actual native sidebar diagram update resets bottom-right pan to top-left/)
   assert.match(result.stdout, /actual host expanded block keeps description and shows functional explanation/)
   assert.match(result.stdout, /actual host Sources click exposes file reference without tool-call logs/)
   assert.match(result.stdout, /native PNG\/SVG\/Save exports cached view with zero diagram-model calls/)
