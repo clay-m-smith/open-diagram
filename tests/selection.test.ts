@@ -122,6 +122,16 @@ test("exact sources deduplicate to latest order while distinct ranges remain sep
   assert.deepEqual(records, selectEvidence([...input].reverse()))
 })
 
+test("subject preference retains relevant material but never resurrects superseded versions", () => {
+  const input = [
+    { ...candidate("subject", "source", "current receiver", 1, "receiver"), priority: 5 },
+    ...Array.from({ length: 200 }, (_, i) => candidate(`other${i}`, "source", `other source ${i}`, i + 2)),
+  ]
+  assert.match(selectEvidence(input, { limit: 1 })[0]!.text, /current receiver/)
+  input.push({ ...candidate("updated", "source", "replacement receiver", 300, "receiver"), priority: 0 })
+  assert.ok(selectEvidence(input).every(item => !item.text.includes("current receiver")))
+})
+
 test("citation IDs depend on stable identity, not excerpt budget or unrelated later logs", () => {
   const source = candidate("read-12", "source", `export class Billing {\n${"  charge() { return ledger.post() }\n".repeat(150)}}`, 1, "src/billing.ts:1-200")
   const large = selectEvidence([source])

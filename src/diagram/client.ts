@@ -48,7 +48,7 @@ export function createDiagramClient(config: DiagramConfig, transport: typeof fet
         .sort((a, b) => (a.item.at ?? a.index) - (b.item.at ?? b.index) || a.index - b.index).at(-1)?.item
       // Follow the cache's material boundary; keep the latest request as task
       // context. Request-only/non-code sessions retain their existing evidence.
-      const authorEvidence = config.backend === "opencode" && hasMaterial
+      const authorEvidence = hasMaterial
         ? evidence.filter((item) => selected.has(item) || item === latestRequest) : evidence
       const author = authorRequest(authorEvidence, previous, forced, granularity, update)
       const { request } = author

@@ -45,7 +45,7 @@ test("accepted diagrams survive reload and both depths; Refresh, timestamps and 
     for (let index = 0; index < 10; index++) {
       await engine.observe("a", [...evidence.map((item) => ({ ...item, at: index + 100 })).reverse(),
         { id: `progress_${index}`, label: "Progress", text: `Completed ${index} checks`, category: "assistant" },
-        { id: `message_${index}`, label: "User request", text: `Follow-up message ${index}`, category: "request" },
+        { id: `message_${index}`, label: "User request", text: "continue", category: "request" },
         { id: `log_${index}`, label: "shell", text: `Test results ${index}`, category: "recent" }])
       await engine.control("a", undefined, true)
     }

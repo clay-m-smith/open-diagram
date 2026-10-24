@@ -87,6 +87,86 @@ test("public compaction retains current project focus without admitting reasonin
   assert.equal(collectEvidence([{ ...compact(summary, 1), status: "running" } as SessionMessageInfo]).length, 0)
 })
 
+test("long supporting work preserves parent objective, compaction and subject across notation domains", () => {
+  const domains = [
+    ["architecture", "gateway.ts", "export class Gateway { route() { return queue.send() } }"],
+    ["flowchart", "approval.md", "# Approval flow\nRequest -> Decide -> Accept or Reject"],
+    ["state", "controller.sv", "module controller; // IDLE -> ARMED -> FAULT\nendmodule"],
+    ["class", "Account.java", "class Account { Ledger ledger; void settle() {} }"],
+    ["er", "orders.sql", "CREATE TABLE orders (id INT PRIMARY KEY, customer_id INT);"],
+    ["sequence", "exchange.txt", "Client -> Server: request\nServer -> Client: reply"],
+    ["timing", "signals.csv", "time,clock,reset\n0,0,1\n1,1,0"],
+    ["circuit", "board.kicad_sch", "(kicad_sch (symbol R1) (symbol C1) (wire VIN R1.1))"],
+  ]
+  for (const [family, path, text] of domains) {
+    const goalText = `Develop ${family} for ${path}. Preserve the current agent's role and permissions.`
+    const objective = { type: "user", id: "job", time: { created: 1 }, text: goalText } as unknown as SessionMessageInfo
+    const compact = { type: "compaction", id: "compact", time: { created: 0 }, status: "completed", summary: `Current subject is ${path}; retain observed connections.` } as unknown as SessionMessageInfo
+    const messages = [compact, objective, read("subject", path, text, 2),
+      ...Array.from({ length: 150 }, (_, i) => read(`receipt${i}`, `notes/STATUS.md`, `Progress receipt ${i}: checks complete`, i + 3, i + 1)),
+      read("procedure", "/tools/.opencode/skills/research/references/fanout.md", "# Worker workflow\nDispatch -> Review -> Archive", 160)]
+    const selected = mergeEvidence(collectEvidence(messages), [])
+    assert.ok(selected.some(item => item.text.includes(text)), family)
+    assert.ok(selected.some(item => item.category === "request" && item.text === goalText), family)
+    assert.ok(selected.some(item => item.category === "context"), family)
+    assert.ok(!selected.some(item => item.text.includes("Worker workflow")), family)
+    assert.ok(SnapshotSchema.shape.evidence.safeParse(selected).success, family)
+    assert.ok(selected.reduce((n, item) => n + item.id.length + item.label.length + item.text.length, 0) <= 36_000)
+  }
+})
+
+test("child task packets cannot replace parent scope; actual child sources still contribute", () => {
+  const request = (id: string, text: string, at: number) => ({ type: "user", id, text, time: { created: at } }) as unknown as SessionMessageInfo
+  const parent = collectEvidence([request("parent", "Map the active receiver and its data path", 1), read("receiver", "receiver.vhd", "entity receiver is port (iq: in bit); end;", 2)])
+  const child = collectEvidence([request("worker", "Review only the saved-result analyzer", 10), read("analyzer", "scripts/analyze_results.py", "def analyze(rows): return sum(rows)", 11)])
+  const selected = mergeEvidence(parent, child)
+  assert.deepEqual(selected.filter(item => item.category === "request").map(item => item.text), ["Map the active receiver and its data path"])
+  assert.ok(selected.some(item => item.text.includes("def analyze")))
+})
+
+test("design and progress documents cannot consume implementation-source reservations", () => {
+  const messages = [read("kernel", "kernel.sv", "module kernel; wire ready; endmodule", 1),
+    ...Array.from({ length: 40 }, (_, i) => read(`design${i}`, `docs/design${i}.md`, `# Design ${i}\n${"Supporting explanation. ".repeat(200)}`, i + 2)),
+    tool("patch", "patch", { patchText: "*** Begin Patch\n*** Update File: notes/NOTES.md\n+New progress record\n*** End Patch" }, "Success", 50)]
+  const selected = mergeEvidence(collectEvidence(messages), [])
+  assert.ok(selected.some(item => item.text.includes("module kernel")))
+  assert.ok(selected.filter(item => item.label.startsWith("patch")).every(item => item.category === "structure"))
+})
+
+test("focus changes invalidate unchanged sources; acknowledgement and repeated objective do not", () => {
+  const request = (id: string, text: string, at: number) => ({ type: "user", id, text, time: { created: at } }) as unknown as SessionMessageInfo
+  const source = read("source", "design.md", "# Architecture\nPipeline A -> Output A\nPipeline B -> Output B", 2)
+  const initial = [request("a", "Focus on Pipeline A", 1), source]
+  const key = (messages: SessionMessageInfo[]) => evidenceKey(mergeEvidence(collectEvidence(messages), []), "overview")
+  assert.notEqual(key(initial), key([...initial, request("b", "Focus on Pipeline B instead", 3)]))
+  assert.equal(key(initial), key([...initial, request("continue", "continue", 3)]))
+  assert.equal(key(initial), key([...initial, request("repeat", "Focus on Pipeline A", 4)]))
+  const short = [request("short", "Show API", 1), source]
+  const chatter = Array.from({ length: 12 }, (_, i) => request(`ack${i}`, "continue", i + 3))
+  assert.equal(key(short), key([...short, ...chatter]))
+  assert.ok(mergeEvidence(collectEvidence([...short, ...chatter]), []).some(item => item.text === "Show API"))
+})
+
+test("workflow-only and explicitly requested instructions remain legitimate subjects", () => {
+  const request = (text: string) => ({ type: "user", id: "u", time: { created: 1 }, text }) as unknown as SessionMessageInfo
+  for (const [text, path, body] of [
+    ["Diagram the test workflow", "tests/test_harness.py", "def test_harness(): build(); validate()"],
+    ["Map the agent skill instructions", "/tools/.opencode/skills/design/SKILL.md", "# Skill\nInspect -> Design -> Review"],
+    ["Show warehouse handoffs", "warehouse.md", "Receive -> Sort -> Dispatch"],
+  ]) {
+    const selected = collectEvidence([request(text), read("r", path, body, 2)])
+    assert.ok(selected.some(item => item.text.includes(body) && item.role === "subject"), path)
+  }
+  assert.ok(materialEvidence(collectEvidence([request("Design a clock timing diagram: reset then two pulses")])).some(item => item.category === "request"))
+  const initial = request("Design approval flow: Request -> Review -> Approve")
+  const refinement = { ...request("Add a rejection branch"), id: "refinement", time: { created: 2 } } as SessionMessageInfo
+  const planned = mergeEvidence(collectEvidence([initial, refinement]), [])
+  assert.ok(planned.some(item => item.text.includes("Request -> Review -> Approve")))
+  assert.ok(planned.some(item => item.text === "Add a rejection branch"))
+  const ack = { ...request("continue"), id: "ack", time: { created: 3 } } as SessionMessageInfo
+  assert.equal(evidenceKey(planned, "overview"), evidenceKey(mergeEvidence(collectEvidence([initial, refinement, ack]), []), "overview"))
+})
+
 test("incremental contract exposes and enforces remaining aggregate node budget", () => {
   const evidence = [{ id: "source", label: "source", text: "implementation" }]
   const node = { id: "node", label: "Node", kind: "operation", detail: "", status: "observed" as const, evidence: ["source"] }

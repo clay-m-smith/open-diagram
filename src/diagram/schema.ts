@@ -90,6 +90,7 @@ export const SnapshotSchema = z.object({
   evidence: z.array(z.object({ id, label: text(160), text: z.string().max(4000),
     at: z.number().optional(), category: z.enum(["request", "context", "source", "structure", "recent", "inventory", "assistant"]).optional(),
     file: id.optional(), mutation: z.boolean().optional(), fingerprint: id.optional(),
+    role: z.enum(["subject", "support", "instruction"]).optional(),
   }).strict()).max(32),
   views: z.array(z.object({ id, label: text(24) }).strict()).max(4),
   instruction: z.string().max(8000), outputSchema: z.record(z.string(), z.unknown()),

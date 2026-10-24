@@ -7,6 +7,8 @@ export type EvidenceCandidate = {
   category: "request" | "context" | "source" | "structure" | "recent" | "inventory" | "assistant"
   source?: string
   order: number
+  priority?: number
+  file?: string
 }
 
 type Category = EvidenceCandidate["category"]
@@ -23,7 +25,7 @@ const SHARES: Record<Category, number> = {
   request: 0.14, context: 0.12, source: 0.30, structure: 0.20, inventory: 0.10, recent: 0.08, assistant: 0.06,
 }
 const TEXT_LIMITS: Record<Category, number> = {
-  request: 4000, context: 4000, source: 4000, structure: 4000, inventory: 4000, recent: 900, assistant: 1200,
+  request: 4000, context: 4000, source: 2400, structure: 2400, inventory: 2400, recent: 900, assistant: 1200,
 }
 
 function bound(value: number | undefined, fallback: number): number {
@@ -173,9 +175,14 @@ function chronology(a: Ranked, b: Ranked): number {
 }
 
 function trimPool(pool: Map<string, Ranked>): void {
-  const retained = [...pool.values()].sort((a, b) => chronology(b, a)).slice(0, POOL_LIMIT)
+  const retained = [...pool.values()].sort(preference).slice(0, POOL_LIMIT)
   pool.clear()
   for (const item of retained) pool.set(item.identity, item)
+}
+
+function preference(a: Ranked, b: Ranked): number {
+  const score = (item: Ranked) => Number.isFinite(item.candidate.priority) ? item.candidate.priority! : 0
+  return score(b) - score(a) || chronology(b, a)
 }
 
 function shortlist(candidates: readonly EvidenceCandidate[]): Ranked[] {
@@ -206,7 +213,7 @@ function shortlist(candidates: readonly EvidenceCandidate[]): Ranked[] {
     const item = { candidate, index, identity: key }
     if (chronology(item, previous) > 0) retained.set(key, item)
   }
-  return [...retained.values()].sort((a, b) => chronology(b, a))
+  return [...retained.values()].sort(preference)
 }
 
 /**
@@ -225,6 +232,18 @@ export function selectEvidence(
   if (budget <= ID_LENGTH || !limit || !candidates.length) return []
   const groups = new Map(CATEGORIES.map((category) => [category, [] as Ranked[]]))
   for (const item of shortlist(candidates)) groups.get(item.candidate.category)!.push(item)
+  // Give distinct observed artifacts a turn before extra ranges of the same
+  // file. Version deduplication happened above; no older read is resurrected.
+  for (const [category, items] of groups) {
+    const files = new Set<string>()
+    const first: Ranked[] = [], extra: Ranked[] = []
+    for (const item of items) {
+      const file = item.candidate.file
+      ;(file && files.has(file) ? extra : first).push(item)
+      if (file) files.add(file)
+    }
+    groups.set(category, [...first, ...extra])
+  }
   const cursors = new Map(CATEGORIES.map((category) => [category, 0]))
   const selected: Array<{ item: Ranked; evidence: Evidence }> = []
   let remaining = budget

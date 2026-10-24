@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto"
 import type { SessionMessageInfo } from "@opencode/client"
 import { selectEvidence, type EvidenceCandidate } from "./selection.js"
+import { activeRequest, evidenceRole, focusPriority, substantiveRequest, type EvidenceRole } from "./focus.js"
 
-export type Evidence = { id: string; label: string; text: string; at?: number; category?: EvidenceCandidate["category"]; file?: string; mutation?: boolean; fingerprint?: string }
-type Candidate = EvidenceCandidate & Pick<Evidence, "file" | "mutation" | "fingerprint"> & { position?: number }
+export type Evidence = { id: string; label: string; text: string; at?: number; category?: EvidenceCandidate["category"]; file?: string; mutation?: boolean; fingerprint?: string; role?: EvidenceRole }
+type Candidate = EvidenceCandidate & Pick<Evidence, "file" | "mutation" | "fingerprint" | "role"> & { position?: number }
 const materialCategory = (category: EvidenceCandidate["category"]) => ["source", "structure", "inventory"].includes(category)
 
 // Fixed, independent material/context budgets: adding chat or logs cannot steal
@@ -19,15 +20,27 @@ function stableSelection(records: Candidate[], limit = 32, budget = 36_000) {
   records = [...newest.values()]
   const files = new Set(records.filter((item) => materialCategory(item.category) && item.file).map((item) => item.file))
   records = records.map((item) => item.file && files.has(item.file) && !materialCategory(item.category) ? { ...item, category: "source" } : item)
+  const objective = activeRequest(records.map((item) => ({ ...item, id: item.key, at: item.order })))
+  const request = objective?.text ?? ""
+  records = records.map(item => ({ ...item, priority: item.category === "request"
+    ? item.key === objective?.id ? 100 : 0 : focusPriority(request, item.label) }))
   const material = records.filter((item) => materialCategory(item.category))
   const materialLimit = Math.max(1, Math.floor(limit * 0.75))
   const materialBudget = Math.floor(budget * 0.78)
-  const selected = material.length ? [...selectEvidence(material, { limit: materialLimit, budget: materialBudget }),
+  // Operational receipts and tests cannot spend the subject's entire allowance.
+  // With no subject material, supporting/non-code work gets the whole budget.
+  const subject = material.filter(item => item.role !== "support")
+  const support = material.filter(item => item.role === "support")
+  const selectedMaterial = subject.length && support.length
+    ? [...selectEvidence(subject, { limit: Math.max(1, Math.floor(materialLimit * 0.75)), budget: Math.floor(materialBudget * 0.75) }),
+      ...selectEvidence(support, { limit: materialLimit - Math.max(1, Math.floor(materialLimit * 0.75)), budget: materialBudget - Math.floor(materialBudget * 0.75) })]
+    : selectEvidence(material, { limit: materialLimit, budget: materialBudget })
+  const selected = material.length ? [...selectedMaterial,
     ...selectEvidence(records.filter((item) => !materialCategory(item.category)),
       { limit: limit - materialLimit, budget: budget - materialBudget })] : selectEvidence(records, { limit, budget })
-  const positions = new Map(records.map((item, index) => [`e_${digest(item.source === undefined ? `key:${item.key}` : `source:${item.source}`)}`, { order: item.order, index, category: item.category }]))
+  const positions = new Map(records.map((item, index) => [`e_${digest(item.source === undefined ? `key:${item.key}` : `source:${item.source}`)}`, { order: item.order, index, category: item.category, role: item.role }]))
   return selected.sort((a, b) => positions.get(a.id)!.order - positions.get(b.id)!.order || positions.get(a.id)!.index - positions.get(b.id)!.index)
-    .map((item) => ({ ...item, category: positions.get(item.id)!.category }))
+    .map((item) => ({ ...item, category: positions.get(item.id)!.category, ...(positions.get(item.id)!.role ? { role: positions.get(item.id)!.role } : {}) }))
 }
 export function cleanText(value: string, limit: number): string {
   return value.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "").slice(0, limit)
@@ -72,7 +85,7 @@ function toolInput(name: string, input: unknown): string {
 /** Reserve room for live child evidence while retaining the parent's current job. */
 export function mergeEvidence(parent: Evidence[], children: Evidence[]): Evidence[] {
   // A worker's compacted objective must not replace its parent's project focus.
-  children = children.filter(item => item.category !== "context")
+  children = children.filter(item => item.category !== "context" && item.category !== "request")
   const files = new Set([...parent, ...children].filter((item) => item.file && item.category && materialCategory(item.category)).map((item) => item.file))
   const promote = (items: Evidence[]) => items.map((item) => item.file && files.has(item.file) && item.category && !materialCategory(item.category)
     ? { ...item, category: "source" as const } : item)
@@ -83,7 +96,7 @@ export function mergeEvidence(parent: Evidence[], children: Evidence[]): Evidenc
     const candidates = items.map((item, index) => {
       const key = `e_${digest(`source:${item.id}`)}`
       if (!originals.has(key) || (originals.get(key)!.at ?? 0) <= (item.at ?? index)) originals.set(key, item)
-      return { key: item.id, source: item.id, label: item.label, text: item.text, category: item.category ?? "recent", order: item.at ?? index, file: item.file }
+      return { key: item.id, source: item.id, label: item.label, text: item.text, category: item.category ?? "recent", order: item.at ?? index, file: item.file, role: item.role }
     })
     return stableSelection(candidates, limit, budget).map((item) => ({ ...originals.get(item.id)!, text: item.text, label: item.label, category: item.category }))
   }
@@ -97,10 +110,12 @@ export function mergeEvidence(parent: Evidence[], children: Evidence[]): Evidenc
 }
 
 function category(name: string, path: string, output: string): EvidenceCandidate["category"] {
-  if (/(?:^|\/)(?:runs?|logs?|artifacts?|node_modules|\.git)\//i.test(path)) return "recent"
-  if (["edit", "patch", "write"].includes(name)) return "source"
+  if (/(?:^|\/)(?:node_modules|\.git)\//i.test(path)) return "recent"
+  if (/\.(?:md|mdx|rst|adoc)$/i.test(path) || /(?:package|tsconfig|config|schema)[^/]*\.json$/i.test(path)) return "structure"
   if (/\.(?:py|[cm]?[jt]sx?|rs|go|java|kt|scala|c|cc|cpp|h|hpp|cs|rb|php|swift|sh|sql|tf|proto|graphql|ya?ml|toml|v|sv|vh|svh|vhd|vhdl|dts|dtsi|ld|sdc|xdc|ioc|kicad_sch|kicad_sym|kicad_pcb|net)$/i.test(path)
-    || /(?:package|tsconfig|config|schema)[^/]*\.json$/i.test(path)) return "source"
+    ) return "source"
+  if (/(?:^|\/)(?:runs?|logs?|artifacts?)\//i.test(path)) return "recent"
+  if (["edit", "patch", "write"].includes(name)) return "source"
   if (name === "glob" || /^Read directory\b/.test(output)) return "inventory"
   if (/architect|design|workflow|diagram|protocol|schema|pipeline|overview|outline/i.test(path)
     || /(?:^|\n)(?:\d+: )?(?:#{1,5} .*?(?:architecture|flow|design|pipeline)|(?:export )?(?:class|interface|def|function) |flowchart |sequenceDiagram)/im.test(output)) return "structure"
@@ -114,22 +129,40 @@ function category(name: string, path: string, output: string): EvidenceCandidate
  * never system instructions, reasoning, provider state or media. */
 export function collectEvidence(messages: readonly SessionMessageInfo[]): Evidence[] {
   const records: Candidate[] = []
-  let materialMessages = 0
+  let subjectMessages = 0, supportMessages = 0
+  const objective = messages.findLast(message => message.type === "user" && substantiveRequest(message.text))
+  const latestRequest = messages.findLast(message => message.type === "user")
+  // Keep cumulative design refinements, especially when no files exist yet.
+  // Repeated acknowledgements and repeated identical objectives add no history.
+  const requests = new Set<SessionMessageInfo>()
+  const requestTexts = new Set<string>()
+  for (let index = messages.length - 1; index >= 0 && requests.size < 4; index--) {
+    const message = messages[index]
+    if (message.type !== "user" || !substantiveRequest(message.text) || requestTexts.has(message.text.trim())) continue
+    requests.add(message); requestTexts.add(message.text.trim())
+  }
+  const request = objective?.type === "user" ? objective.text : ""
+  const compaction = messages.findLast(message => message.type === "compaction" && message.status === "completed")
   // Chat cannot age source observations out of the material window.
   for (let index = messages.length - 1; index >= 0; index--) {
     const recent = index >= messages.length - 120
-    if (!recent && materialMessages >= 120) break
     const message = messages[index]
     const at = message.time?.created ?? index
-    if (message.type === "compaction" && message.status === "completed") {
+    if (message === compaction && message.type === "compaction" && message.status === "completed") {
       // context() replaces older turns with this public summary. Ignoring it
       // loses the subject/version being designed while retaining recent chores.
       // One stable identity lets a newer compaction supersede, not accumulate.
       records.push({ key: "compacted-context", source: "compacted-context", label: "Compacted context (historical, not source proof)",
         text: message.summary, category: "context", order: at, position: index * 1024 })
     }
-    if (recent && message.type === "user") records.push({ key: message.id, label: "User request", text: message.text, category: "request", order: at, position: index * 1024 })
+    // Only the latest acknowledgement accompanies bounded substantive history.
+    if (message.type === "user" && (requests.has(message) || message === latestRequest)) records.push({ key: message.id,
+      ...(message === objective ? { source: "active-objective" } : {}), label: message === objective ? "Active user objective" : "User request",
+      text: message.text, category: "request", role: substantiveRequest(message.text) ? "subject" : "support", order: at, position: index * 1024 })
     if (message.type !== "assistant") continue
+    // Always scan cheap user/compaction metadata, even after material retention
+    // fills. Supporting activity cannot age the actual subject out of its window.
+    if (!recent && subjectMessages >= 120 && supportMessages >= 120) continue
     const start = records.length
     for (const [partIndex, part] of message.content.slice(-128).entries()) {
       const order = at + partIndex / 1000
@@ -154,11 +187,18 @@ export function collectEvidence(messages: readonly SessionMessageInfo[]): Eviden
         : part.name === "glob" ? `glob:${JSON.stringify(part.state.input)}` : undefined
       const patchPaths = part.name === "patch" && arguments_ && typeof arguments_ === "object" && typeof arguments_.patchText === "string"
         ? [...arguments_.patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((match) => match[1]) : []
-      const kind = part.state.status === "completed" ? patchPaths.length && patchPaths.every((path) => category("patch", path, "") === "recent")
-        ? "recent" : category(part.name, String(path ?? ""), output) : "recent"
+      const patchKinds = patchPaths.map(path => category("patch", path, ""))
+      const kind = part.state.status !== "completed" ? "recent"
+        : patchKinds.length ? patchKinds.includes("source") ? "source" : patchKinds.includes("structure") ? "structure" : "recent"
+        : category(part.name, String(path ?? ""), output)
+      const roles = (patchPaths.length ? patchPaths : [String(path ?? "")]).map(path => evidenceRole(path, request))
+      const role = ["subagent", "shell", "execute"].includes(part.name) ? "support"
+        : roles.includes("subject") ? "subject" : roles.includes("support") ? "support" : "instruction"
+      if (role === "instruction") continue
       records.push({ key: part.id, source, label: `${part.name}${path ? ` · ${path}` : ""} · ${part.state.status}`,
         text: part.name === "edit" || part.name === "patch" ? `${input}\n${output.slice(0, 600)}` : `${input.slice(0, part.name === "shell" || part.name === "execute" ? 400 : 600)}\n${output}`,
         category: kind,
+        role,
         file: part.state.status === "completed" && typeof path === "string" ? digest(path) : undefined,
         mutation,
         fingerprint: materialCategory(kind) || (part.state.status === "completed" && typeof path === "string") ? digest(JSON.stringify([part.name, part.state.input,
@@ -167,8 +207,10 @@ export function collectEvidence(messages: readonly SessionMessageInfo[]): Eviden
         order: part.time?.completed ?? part.time?.created ?? order })
     }
     const candidates = records.splice(start)
-    const material = candidates.filter((item) => materialCategory(item.category))
-    if (material.length && materialMessages++ < 120) records.push(...material)
+    const subject = candidates.filter((item) => materialCategory(item.category) && item.role !== "support")
+    const support = candidates.filter((item) => materialCategory(item.category) && item.role === "support")
+    if (subject.length && subjectMessages++ < 120) records.push(...subject)
+    if (support.length && supportMessages++ < 120) records.push(...support)
     if (recent) records.push(...candidates.filter((item) => !materialCategory(item.category)))
   }
   records.sort((a, b) => a.position! - b.position!)

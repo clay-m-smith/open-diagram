@@ -112,7 +112,7 @@ const server = createServer(async (request, response) => {
     const hasTool = body.messages.slice(userIndex + 1).some((item) => item.role === "tool")
     let delta = { content: "Model change inspected." }
     let finish = "stop"
-    if (!hasTool && !user.includes("CHAT_ONLY")) {
+    if (!hasTool && !user.includes("thanks, keep tracking the current implementation.")) {
       const vocabularyEdit = user.includes("CHANGE_VOCAB")
       const edit = user.includes("UPDATE_MODEL") || vocabularyEdit
       const tool = body.tools.find((tool) => tool.function.name === (edit ? "edit" : "read"))
@@ -293,7 +293,7 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       assert.equal(diagramRequests, memoCalls, "both accepted depths survive reload with zero regeneration")
       console.log("OK: native durable fingerprints make unchanged Refresh and cached depth switches zero-model operations")
       const completedBeforeChat = events.filter((event) => event.type === "session.execution.succeeded" && event.data.sessionID === session.id).length
-      await client.session.prompt({ sessionID: session.id, text: "CHAT_ONLY: thanks, keep tracking the current implementation." }, { signal: abort.signal })
+      await client.session.prompt({ sessionID: session.id, text: "thanks, keep tracking the current implementation." }, { signal: abort.signal })
       await wait(() => events.filter((event) => event.type === "session.execution.succeeded" && event.data.sessionID === session.id).length > completedBeforeChat)
       await new Promise((resolve) => setTimeout(resolve, 1400))
       assert.equal(diagramRequests, memoCalls, "main-window chat without source change does not invoke diagram model")

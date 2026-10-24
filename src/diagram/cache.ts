@@ -2,6 +2,7 @@ import { z } from "zod"
 import { digest, type Evidence } from "./evidence.js"
 import { GranularitySchema, StateSchema, ViewAnalysisSchema, type DiagramState, type DiagramView } from "./schema.js"
 import { diagramEvidence } from "./notation.js"
+import { activeRequest, substantiveRequest } from "./focus.js"
 
 // Internal durable metadata, never part of the public snapshot/RPC schema.
 // Two accepted entries: one per depth. Failed attempts never replace them.
@@ -26,13 +27,15 @@ export type StoredDiagram = DiagramState & { memo?: DiagramMemo }
 /** Event time/order, progress prose and command logs are not code changes. */
 export function materialEvidence(evidence: readonly Evidence[]): Evidence[] {
   const material = evidence.filter((item) => !item.category || ["source", "structure", "inventory"].includes(item.category))
-  // Once implementation evidence exists, chat alone is not a code change.
-  // Request-only domains can still update from their public user requests.
-  const requests = evidence.filter((item) => item.category === "request")
+  // A new objective can change every view without changing any source bytes.
+  // Acknowledgements/progress still must not trigger source-backed inference.
+  const objective = activeRequest(evidence)
+  const requests = evidence.filter((item) => item.category === "request" && item.role !== "support" && substantiveRequest(item.text))
   // Non-code domains and inventory-only sessions still have an authoring path.
   const files = new Set(material.map((item) => item.file).filter(Boolean))
-  return material.length ? evidence.filter((item) => material.includes(item) || item.category === "context" || (item.file && files.has(item.file)))
-    : requests.length ? evidence.filter(item => item.category === "request" || item.category === "context") : evidence.filter((item) => item.category !== "assistant")
+  return material.length ? evidence.filter((item) => material.includes(item) || item === objective || item.category === "context" || (item.file && files.has(item.file)))
+    : requests.length ? evidence.filter(item => requests.includes(item) || item.category === "context")
+      : evidence.filter((item) => item.category !== "assistant" && item.category !== "request")
 }
 export function evidenceFingerprints(evidence: readonly Evidence[]): Record<string, string> {
   const material = materialEvidence(evidence)
