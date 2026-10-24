@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
-import { Message } from "@opencode/ai"
 import type { NativeGenerate } from "./client.js"
 import { digest } from "./evidence.js"
 
@@ -51,7 +50,9 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
     event.tools = { [toolName]: tool }
     event.system = [{ type: "text", text: `You are the diagram author. Submit your answer by calling ${toolName} exactly once with arguments matching its schema. Do not answer with prose, a code fence, or JSON text. No other tools are available.` }]
     // Evidence is request-local, not copied into the managed session's history.
-    event.messages = [Message.user(job.input.prompt)]
+    // The native hook accepts structural messages. Avoid loading a second AI
+    // runtime (and its private Effect transport modules) just to build one.
+    event.messages = [{ role: "user", content: [{ type: "text", text: job.input.prompt }] }]
   })
   await ctx.session.hook("title", (event) => { if (owns(event.sessionID)) event.result = "Diagram author (managed)" })
   await ctx.session.hook("compaction", (event) => { if (owns(event.sessionID)) event.result = { summary: "Managed diagram author; each request supplies independent evidence." } })

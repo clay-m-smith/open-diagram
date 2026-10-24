@@ -9,7 +9,7 @@ import { Service } from "@opencode/client/service"
 /** A private, authenticated V2 service; never touches the user's shared service. */
 export async function withV2Runtime(run) {
   const version = execFileSync("opencode", ["--version"], { encoding: "utf8" }).trim().match(/^opencode v(2\.0\.(\d+)(?:[-+][\w.-]+)?)$/)
-  if (!version || Number(version[2]) < 7) throw new Error("Runtime tests require OpenCode >=2.0.7 <2.1.0 on PATH")
+  if (!version || Number(version[2]) < 27) throw new Error("Runtime tests require OpenCode >=2.0.27 <2.1.0 on PATH")
   const temporary = await mkdtemp(join(tmpdir(), "open-diagram-v2-"))
   const file = join(temporary, "XDG_STATE_HOME", "opencode", "service.json")
   const previous = { ...process.env }

@@ -32,28 +32,29 @@
     "docs:check": "node --import tsx scripts/render-readme.mjs --check"
   },
   "dependencies": {
-    "@opencode/ai": "2.0.7",
-    "@opencode/plugin": "2.0.7",
-    "@opencode/schema": "2.0.7",
+    "@opencode/schema": "2.0.27",
     "@resvg/resvg-js": "2.6.2",
-    "effect": "4.0.0-rc.112",
     "elkjs": "0.12.0",
     "string-width": "7.2.0",
     "zod": "4.1.8"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.5.10 <0.6.0",
-    "@opentui/solid": ">=0.5.10 <0.6.0",
+    "@opencode/plugin": ">=2.0.27 <3",
+    "effect": "^4.0.1",
+    "@opentui/core": ">=0.5.17 <0.6.0",
+    "@opentui/solid": ">=0.5.17 <0.6.0",
     "solid-js": ">=1.9.0 <2.0.0"
   },
   "devDependencies": {
-    "@opencode/client": "2.0.7",
+    "@opencode/client": "2.0.27",
+    "@opencode/plugin": "2.0.27",
     "@types/node": "24.12.2",
+    "effect": "4.0.1",
     "tsx": "4.20.6",
     "typescript": "5.9.3"
   },
   "engines": {
     "node": ">=22",
-    "opencode": ">=2.0.7 <3"
+    "opencode": ">=2.0.27 <3"
   }
 }
