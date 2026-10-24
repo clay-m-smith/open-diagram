@@ -3,7 +3,7 @@
   "name": "open-diagram",
   "version": "0.1.0",
   "private": true,
-  "description": "Native software, hardware, and firmware diagrams for OpenCode V2.",
+  "description": "Software, hardware, and firmware diagrams for OpenCode V2 and standalone MCP clients.",
   "repository": {
     "type": "git",
     "url": "https://github.com/clay-m-smith/open-diagram.git"
@@ -15,11 +15,14 @@
     ".": "./server.ts",
     "./tui": "./tui.tsx",
     "./harness": "./src/diagram/harness.ts",
-    "./rpc": "./src/diagram/schema.ts"
+    "./rpc": "./src/diagram/schema.ts",
+    "./core": "./src/core.ts",
+    "./mcp": "./src/standalone/server.ts"
   },
   "files": [
     "server.ts",
     "tui.tsx",
+    "mcp.mjs",
     "src",
     "docs",
     "README.md"
@@ -28,14 +31,17 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "verify": "npm run typecheck && npm test",
+    "mcp": "node mcp.mjs",
     "docs:images": "node --import tsx scripts/render-readme.mjs",
     "docs:check": "node --import tsx scripts/render-readme.mjs --check"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0",
     "@opencode/schema": "2.0.27",
     "@resvg/resvg-js": "2.6.2",
     "elkjs": "0.12.0",
     "string-width": "7.2.0",
+    "tsx": "4.20.6",
     "zod": "4.1.8"
   },
   "peerDependencies": {
@@ -46,11 +52,11 @@
     "solid-js": ">=1.9.0 <2.0.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
     "@opencode/client": "2.0.27",
     "@opencode/plugin": "2.0.27",
     "@types/node": "24.12.2",
     "effect": "4.0.1",
-    "tsx": "4.20.6",
     "typescript": "5.9.3"
   },
   "engines": {

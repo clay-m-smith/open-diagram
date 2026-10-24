@@ -2,37 +2,48 @@
 
 **Keep the architecture in view while you build.**
 
-Open Diagram turns development context into native, interactive diagrams inside
-OpenCode V2. Follow a software pipeline, inspect a firmware state machine, trace a
-hardware interface, or map a circuit's pins and nets—without leaving the terminal.
+Open Diagram turns software, hardware, and firmware structures into validated
+diagrams. Use a **native OpenCode V2 panel**, connect another AI client through
+the **standalone MCP server**, or embed the **Node API** in your own application.
 
-Keep the big picture beside your code. Open a node to inspect its behavior and
-sources, expand the panel when you need room, then export a clean PNG or SVG when
-the explanation needs to travel. No separate diagram editor. No model call just
-to look around.
+Follow a software pipeline, inspect a state machine, trace a hardware interface,
+or map a circuit's pins and nets. Keep structured graph JSON for your own
+visualization, or render clean SVG and PNG images. Validation and rendering do
+not call a model; you choose who authors the diagram.
+
+| Integration | Best for | What you get |
+| --- | --- | --- |
+| [Standalone MCP](#standalone-mcp-no-opencode-required) | Other AI clients and MCP-enabled services | Client-authored diagrams, JSON tools/resources, SVG/PNG output; local stdio, memory-only storage |
+| [Node API](#node-api-for-applications) | Custom services and visualizations | Shared schemas, citation validation, layout, SVG/PNG functions; your app owns inputs and storage |
+| [OpenCode plugin](#opencode-plugin-setup) | Keeping architecture beside development work | Native interactive TUI, session evidence, optional automatic authoring, durable cached diagrams |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
-  <img src="docs/images/architecture-light.png" alt="Open Diagram's own data flow: public session evidence enters the diagram engine, which coordinates the configured model, durable storage, native TUI, and image exports." width="760">
+  <img src="docs/images/architecture-light.png" alt="Open Diagram's OpenCode integration: public session evidence enters the diagram engine, which coordinates the configured model, durable storage, native TUI, and image exports." width="760">
 </picture>
 
-*Open Diagram, drawn with Open Diagram. This hand-authored, source-linked view of
-the repository uses the plugin's production exporter—not a terminal screenshot.
+*The OpenCode integration, drawn with Open Diagram. This hand-authored,
+source-linked view uses the shared production exporter—not a terminal screenshot.
 [SVG](docs/images/architecture-light.svg)
 · [How these images are generated](docs/images/README.md)*
 
 ## Why use it?
 
-- **Context stays visible.** Separate views for distinct structures; select a
-  block for its description, behavior, and source references. Authoring prioritizes
-  the current system over supporting research, audit, or recovery workflows.
+- **Works beyond OpenCode.** MCP clients publish diagrams using their own model
+  and context. Other applications can consume graph JSON or reuse the Node API.
+- **Context stays visible in OpenCode.** Separate views for distinct structures;
+  select a block for its description, behavior, and source references. Authoring prioritizes
+  the parent's active objective over supporting research, audit, or recovery work.
+  Explicitly requested workflows, tests, and instructions can be subjects too.
 - **Software and hardware belong together.** Architecture, flowcharts, state
   machines, classes, ER models, sequences, timing, and circuits have typed semantics.
-- **You choose the author.** Use your active agent, a dedicated OpenCode model,
-  or an OpenAI-compatible endpoint. No implicit paid fallback.
+- **You choose the author.** Bring a diagram from any capable client or author it
+  in OpenCode with your active agent, a dedicated model, or an OpenAI-compatible
+  endpoint. No implicit paid fallback.
 - **Viewing is local.** Switching views, resizing, selecting, and exporting never
-  call a model. Accepted diagrams and tracking preferences survive reloads.
-- **Updates need not start over.** Reuse unchanged views and node content. Native
+  call a model. The OpenCode plugin persists accepted diagrams and tracking
+  preferences; the standalone MCP store lasts only for its process.
+- **Updates need not start over in OpenCode.** Reuse unchanged views and node content. Native
   authoring supports compact drafts and one bounded validation repair; failed
   updates leave the last valid diagram visible.
 - **It feels like OpenCode.** Native sidebar, keyboard navigation, resizable
@@ -40,13 +51,8 @@ the repository uses the plugin's production exporter—not a terminal screenshot
 
 ## Install and set up
 
-Requires **Node.js 22+** and **OpenCode 2.x (`>=2.0.7 <3`)**.
-Current verification used **OpenCode 2.0.26**. The range admits later 2.x releases;
-it does not claim every future release has already been tested.
-The supported installation today is a local checkout; this repository is still
-marked `private` for npm publication.
-
-### 1. Get the plugin
+All integrations use **Node.js 22+** and a local checkout. The repository is still
+marked `private` for npm publication; do not assume a registry package exists.
 
 ```sh
 git clone https://github.com/clay-m-smith/open-diagram.git
@@ -58,7 +64,69 @@ pwd
 Keep the absolute path printed by `pwd`. On Windows, use an absolute path with
 forward slashes in JSON, such as `C:/projects/open-diagram`.
 
-### 2. Load it in your project
+### Standalone MCP: no OpenCode required
+
+Configure your MCP client to launch:
+
+```sh
+node /absolute/path/to/open-diagram/mcp.mjs
+```
+
+For clients using an `mcpServers` configuration object:
+
+```json
+{
+  "mcpServers": {
+    "open-diagram": {
+      "command": "node",
+      "args": ["/absolute/path/to/open-diagram/mcp.mjs"]
+    }
+  }
+}
+```
+
+Configuration file locations and keys vary by host. The launcher waits for MCP
+messages on stdin; it does not open a web page or listen on a network port.
+
+Ask the connected client:
+
+> Call `diagram_schema`, then author a diagram from the context I provide. Publish
+> it with `diagram_publish`, a diagram ID, `expectedRevision: 0`, and matching
+> source references. Render its overview view as PNG with `diagram_render`.
+
+`diagram_get` returns accepted JSON; `diagram_list` discovers diagrams and views;
+`diagram_remove` frees a record. JSON is also available through MCP resources.
+Updates require the current revision, so stale or invalid submissions do not
+overwrite accepted diagrams. Rendering returns an embedded SVG resource or PNG
+image, with display support determined by your client.
+
+**First-version boundary:** local stdio, up to 32 diagrams, memory-only storage.
+Each server process has its own store. No OpenCode connection, secondary model,
+automatic source-file reads, HTTP hosting, or shared persistent service.
+
+See the **[complete standalone guide](docs/standalone.md)** for tool arguments,
+publication examples, resource URIs, limits, and troubleshooting.
+
+### Node API for applications
+
+Import `open-diagram/core` to reuse `GraphSchema`, `validateDiagramOutput`,
+`layoutDiagram`, `renderDiagramSVG`, and `renderDiagramPNG`. Your app supplies the
+data and owns persistence or delivery to its visualization. No MCP connection or
+OpenCode runtime is required.
+
+This is a TypeScript source entrypoint for Node-side use, not a browser bundle.
+Use a TypeScript-aware runtime such as `node --import tsx your-script.ts`.
+[Node API example and exports](docs/standalone.md#use-the-shared-node-api).
+
+## OpenCode plugin setup
+
+Requires **OpenCode 2.x (`>=2.0.27 <3`)** in addition to the checkout above.
+Current full verification used **OpenCode 2.0.27**. The range admits later 2.x
+releases; it does not claim every future release has already been tested. The
+host supplies the plugin/Effect peer runtime; local development pins match
+2.0.27. See [setup](docs/setup.md) for dependency compatibility and troubleshooting.
+
+### 1. Load it in your project
 
 Add this entry to the **target project's** `opencode.json` or `opencode.jsonc`.
 Merge it into existing `plugins`; do not replace your other settings.
@@ -79,7 +147,7 @@ if its plugin entry has not appeared. The native **Classic sidebar** is selected
 by default, with diagram tabs still available. Click a diagram tab or run
 `/open-diagram` to open the diagram view.
 
-### 3. Choose the model that draws your diagrams
+### 2. Choose the model that draws your diagrams
 
 | Mode | Who authors the diagram? | What to configure |
 | --- | --- | --- |
@@ -147,7 +215,7 @@ See the **[numbered setup and model-selection guide](docs/setup.md)** for exact 
 splitting, variants, local/remote endpoints, credentials, switching models, cost
 controls, and troubleshooting.
 
-### 4. Create your first diagram
+### 3. Create your first diagram
 
 Have the agent inspect the relevant source files or discuss the design. With an
 automatic backend, meaningful development activity can schedule an update; use
@@ -188,7 +256,7 @@ compact native notations, not exhaustive UML/IEC drawings or a CAD editor.
 *A second view of this repository: reopening a cached diagram. The same accepted
 data feeds the terminal and exports. [SVG](docs/images/cached-view-light.svg)*
 
-## Work the way you want
+## Native OpenCode controls
 
 | Action | Control |
 | --- | --- |
@@ -214,14 +282,24 @@ SSH clipboard requirements, and rendering limits.
 
 ## Under the hood
 
-The server owns evidence, validation, generation, and durable state. The TUI owns
-presentation. Generic graph layout uses pinned ELK.js in an isolated worker;
-sequence, timing, and circuit views use deterministic family-specific geometry.
-All layouts are local and shared by terminal and image rendering.
+The shared core owns graph/notation schemas, validation, layout, and image
+rendering. The OpenCode adapter owns session evidence, configured generation,
+and durable state; its TUI owns presentation. The standalone MCP adapter accepts
+client-authored diagrams and owns a bounded in-memory store, without importing
+the OpenCode runtime. The Node API exposes the core directly.
 
-Evidence selection reserves space for source material and current requests.
+Generic graph layout uses pinned ELK.js in an isolated worker; sequence, timing,
+and circuit views use deterministic family-specific geometry. All integrations
+reuse these local layouts and exporters.
+
+Evidence selection retains the parent's meaningful objective and reserves bounded
+space for subject and supporting evidence. Worker facts can support that objective;
+worker objectives do not replace it. Selection is local and heuristic, with no
+extra model calls or exhaustive semantic verification. Meaningful objective
+changes invalidate cache reuse even when source bytes are unchanged.
 Completed public compaction summaries retain historical project context, not
-proof of implementation. Native authoring expands compact drafts or sparse
+proof of implementation. Native authoring uses an isolated managed session with
+request-local evidence, restricted permissions, and a result tool. It expands compact drafts or sparse
 updates into canonical graphs, then validates structure, references, citations,
 and budgets before anything replaces an accepted view.
 
@@ -240,6 +318,8 @@ exporter. Arrows show data and feedback, not a complete call graph.
 </details>
 
 - [Server and public RPC](src/diagram/server.ts)
+- [Standalone MCP server](src/standalone/server.ts) and [bounded store](src/standalone/store.ts)
+- [Host-independent Node API](src/core.ts) and [shared graph schemas](src/diagram/model.ts)
 - [Engine and durable caches](src/diagram/engine.ts)
 - [Native author and validation repair](src/diagram/client.ts)
 - [Versioned notation contracts](src/diagram/notation-schema.ts)
@@ -250,13 +330,16 @@ exporter. Arrows show data and feedback, not a complete call graph.
 
 ```sh
 npm ci
-npm run verify       # TypeScript + unit, native TUI, and isolated runtime checks
+npm run verify       # TypeScript + unit, MCP, native TUI, and isolated runtime checks
+node --import tsx --test tests/standalone.test.ts  # Standalone-only checks
 npm run docs:images  # Regenerate this README's light/dark SVG and PNG images
 npm run docs:check   # Check SVG freshness and PNG signatures/dimensions
 npm pack --dry-run   # Inspect the package file list; does not publish
 ```
 
-Runtime tests require `opencode` and `python3` on PATH. The native renderer test
+Native runtime tests require OpenCode **2.0.27–2.0.x** and `python3` on PATH;
+the existing harness rejects 2.1.x even though the package's host range is broader.
+Standalone tests do not need OpenCode. The native renderer test
 needs Node **26.4+** with `--experimental-ffi`; it skips on older Node versions.
 Tests use isolated fixture services, never paid models or the shared service.
 
@@ -266,10 +349,15 @@ Pushing Git does **not** publish to npm or change repository visibility.
 
 ## Trust and limits
 
-Diagrams are interpretations of bounded public session evidence, not proof of
-correctness or an exhaustive repository scan. Read the relevant files into the
-session; image-only schematics and omitted declarations cannot be reconstructed.
-Automatic backends receive those excerpts, so avoid admitting secrets.
+Diagrams are interpretations, not proof of correctness or an exhaustive scan.
+Standalone clients supply graph content and source references: validation checks
+structure and reference consistency, not the truth of their claims. MCP records
+are private to the launched process but readable by its caller; they disappear on
+exit. Export or retain JSON in your application when durability matters.
+
+The OpenCode plugin uses bounded public session evidence. Read relevant files
+into the session; image-only schematics and omitted declarations cannot be
+reconstructed. Automatic backends receive those excerpts, so avoid admitting secrets.
 
 Failed updates retain the last valid diagram with a visible warning. Accepted
 graph text and citation labels persist in location-scoped plugin storage; source
@@ -282,4 +370,4 @@ time out. Native generation and at most one repair share `timeoutMs` (default
 
 Circuit connectivity comes from explicit pins and nets—not crossing lines.
 PCB placement/routing, CAD import adapters, simulation, ERC/DRC, manufacturing
-outputs, and electrical-safety certification are outside this plugin's scope.
+outputs, and electrical-safety certification are outside Open Diagram's scope.

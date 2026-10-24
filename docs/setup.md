@@ -1,13 +1,27 @@
-# Install, configure, and choose a diagram model
+# Set up the OpenCode plugin and choose a model
 
-Open Diagram is an OpenCode **2.x** plugin (`>=2.0.7 <3`), not an OpenCode V1
-extension. Node.js 22+ is required for the repository tools. Use your current
+This guide covers the **OpenCode integration**. For other AI clients or services,
+use the [standalone MCP and Node API guide](standalone.md): Node.js 22+, no OpenCode
+process, no secondary model, client-authored diagrams, and local memory-only
+storage. Both paths share the graph schemas and SVG/PNG renderers, but not the
+same session, persistence, or authoring controls.
+
+Open Diagram is an OpenCode **2.x** plugin (`>=2.0.27 <3`), not an OpenCode V1
+extension. Node.js 22+ is required for the repository tools. Use a supported
 OpenCode 2.x installation; no downgrade to the dependency version in this
 repository is required. Dependency pins and `package-lock.json` make builds
 reproducible; `engines.opencode` describes the host compatibility range.
-The full suite, including isolated native runtime checks, currently passes on
-OpenCode **2.0.11**, including the current result-tool generation path. The API
-dependency is 2.0.7; other admitted 2.x hosts are not pre-certified by this run.
+The full suite, including isolated native runtime and TUI checks, passes on
+**OpenCode 2.0.27**. Other admitted hosts are not pre-certified by this run.
+
+OpenCode supplies `@opencode/plugin` and `effect` at runtime through peer
+dependencies. Local development pins `@opencode/client`, `@opencode/plugin`, and
+`@opencode/schema` to **2.0.27**, with matching stable **Effect 4.0.1**. Older
+bundled schema dependencies expected prerelease Effect APIs and are incompatible
+with 2.0.27's stable Effect runtime, causing missing HTTP/SSE modules or
+`Schema.isStartsWith` failures. Keep schema and development pins compatible with
+the host-provided runtime; use only public Effect subpaths. See the host's
+[Effect plugin guidance](https://opencode.ai/v2/docs/build/plugins/effect).
 
 ## 1. Install from this repository
 
@@ -154,7 +168,7 @@ Fingerprint metadata and absolute timestamps stay out of the model prompt; evide
 text, source identities and relative observation order are preserved. Cold requests
 include only identity/topology hints from a prior diagram, not its old descriptions.
 When material sources exist, native requests use the same material boundary as
-the cache plus the latest user request, rather than resending progress summaries
+the cache plus the active meaningful parent request, rather than resending progress summaries
 and unrelated command output. Source-associated mutation records remain included;
 request-only/non-code sessions keep their full evidence path.
 Repair receives safe field-level validation details, including exact code-owned
@@ -202,14 +216,20 @@ Completed public compaction summaries are retained as bounded `context` evidence
 separate from source proof. This keeps the project subject and active design/version
 available when OpenCode replaces earlier turns with a summary. Changed context
 reopens the whole tab set; ordinary source-only edits still use narrowed updates.
-Child summaries cannot replace the parent's project context. No reasoning, provider
+Parent objectives survive acknowledgements, progress, and related-worker traffic.
+Worker source facts can support the parent's subject, but worker objectives and
+child summaries cannot replace it. Meaningful parent-objective changes invalidate
+cache reuse and reopen all views even without source edits. No reasoning, provider
 state, private plugin data, or hidden history is collected.
 All-view incremental replies may order their updates by tab priority without
-reprinting unchanged graphs. Current system/model views take precedence over
-supporting research, audit, launch, and recovery workflows; superseded designs
+reprinting unchanged graphs. Views of the actively requested subject take precedence
+over supporting research, audit, launch, and recovery work; explicitly requested
+workflows, tests, or instructions are legitimate subjects. All eight notation
+families remain equal choices, selected for the subject's semantics. Superseded designs
 must be reconciled with current task context and source/configuration evidence.
-These semantic choices are authoring policy, not a keyword classifier or a claim
-that every generated view is automatically semantically verified.
+Bounded subject/support evidence selection uses local heuristics, not extra model
+calls. These preferences and authoring instructions are not exhaustive semantic
+analysis or a guarantee of exact model compliance.
 Malformed direct group membership, oversized supplied prose, and supported
 citation-array faults can use exact-field repair after incremental expansion.
 Unchanged fields remain exact; the completed result still passes full canonical
@@ -220,7 +240,7 @@ Pause, and unload cancellation to the provider transport. It waits for interrupt
 cleanup before releasing the project's generation slot; it does not abandon a
 still-running request with a Promise race.
 Session reads, waits, and model selection use the public Effect API so cancellation
-also covers managed-session reuse; the 2.0.7 Promise adapter ignores request signals.
+also covers managed-session reuse; the Promise adapter ignores request signals.
 Creation and prompt admission finish before explicit interruption/draining, avoiding
 orphaned mutations. Cleanup can outlast the generation deadline while work stops.
 
@@ -324,6 +344,13 @@ TypeScript imports, RPC examples, limits, and incremental behavior.
 
 ## Cost and troubleshooting
 
+- **Plugin fails to load after a host/dependency upgrade:** run `npm ci` in this
+  checkout and check the supported host version above. A running service can
+  retain old dependency modules across project reloads. If fresh isolated checks
+  pass but service logs still report removed APIs such as `Schema.isStartsWith`,
+  run `opencode service restart` at a safe stopping point. This can interrupt
+  active sessions/tool calls; reconcile surviving external jobs before resuming.
+  Do not delete session databases or caches to work around the error.
 - **Empty diagram in manual mode:** expected until an author publishes. Refresh
   is not an instruction to your chat agent and cannot generate a manual diagram.
 - **Configured model unavailable:** check exact provider/model IDs and provider

@@ -6,14 +6,37 @@ presentation. No provider-specific routing is required by the graph protocol.
 For numbered install and model-selection instructions, start with
 [setup](setup.md). For Git/npm release procedures, see [publishing](publishing.md).
 
-## Three integration paths
+## Choose an integration boundary
+
+| Boundary | Runtime and inputs | Output and ownership |
+| --- | --- | --- |
+| [Standalone MCP](standalone.md) | Local Node process; client-authored analysis and source references | JSON tools/resources, SVG/PNG; bounded memory-only records |
+| [`open-diagram/core`](standalone.md#use-the-shared-node-api) | Node-side TypeScript API; caller-supplied data | Shared schema/validation/layout/export functions; caller owns storage and transport |
+| OpenCode plugin tools/RPC | OpenCode session and collected evidence | Accepted views, tracking controls, location-scoped durable state and TUI |
+
+All three use the canonical `{relevant, reason, views}` analysis format and the
+same notation validators. They do **not** share identity or concurrency tokens:
+MCP uses caller-chosen `diagramID` plus `expectedRevision`; OpenCode uses
+`sessionID` and an evidence snapshot `token`. Neither token is authentication.
+MCP source references are supplied by the client and are not fetched or verified
+against files. Rendering and validation never invoke a model.
+
+Import `open-diagram/core` for host-independent authoring instructions, schema
+generation, parsing, validation, layout, and SVG/PNG. `open-diagram/harness` keeps
+its existing OpenCode exports, including `DiagramRpc`; `open-diagram/rpc` remains
+the native transport contract. `open-diagram/mcp` exports an isolated server
+factory, while `node mcp.mjs` starts its local stdio transport.
+
+## Three OpenCode authoring paths
 
 1. **OpenAI-compatible endpoint:** configure `backend: "openai-compatible"`,
    `baseURL`, and `model`. Loopback endpoints are the default trust boundary;
    remote endpoints require `allowRemote: true`. Authentication uses `apiKeyEnv`.
 2. **An OpenCode model:** configure `backend: "opencode"`, `providerID`, `model`,
-   and optionally `variant`. Generation uses the public `generate.text` API;
-   it does not change the conversation's model or create an agent session.
+   and optionally `variant`. Generation uses an isolated managed author session
+   through public OpenCode V2 session/tool APIs, with request-local evidence and
+   restricted permissions: only `open_diagram_result` is exposed; file, shell,
+   and other tools are denied. It does not change the conversation's model.
    This can incur charges under the configured provider.
 3. **Any external or active model:** obtain a snapshot, produce the documented
    JSON, and publish it through the tools or authenticated RPC. Use
@@ -30,6 +53,10 @@ citations or retries transport failures. This can mean up to two model calls per
 update. Invalid output is never published.
 
 ## Authoring protocol
+
+This section describes **OpenCode snapshot/publication**. For standalone use,
+follow [MCP authoring and publication](standalone.md#author-publish-inspect-render);
+there is no OpenCode session or snapshot tool in that server.
 
 Call `open_diagram_snapshot` with `{}` from the active session. Its response
 contains `evidence`, `instruction`, `outputSchema`, and `token`. Generate the
@@ -89,7 +116,9 @@ updated. Reconnect/plugin-reload events invalidate cached snapshots for one scop
 read, without triggering model generation. No periodic polling is used.
 
 Refresh is content-aware: it reuses an accepted diagram for unchanged material
-evidence and depth, or retries a failed changed-input update. Accepted per-depth
+evidence, meaningful parent objective, and depth, or retries a failed changed-input
+update. A meaningful objective change invalidates reuse and reopens all views even
+without source edits; acknowledgements and progress do not replace that objective. Accepted per-depth
 entries and evidence fingerprints are stored atomically with the last-good state
 in an internal `memo` field; RPC snapshots never expose this metadata. Existing
 records without `memo` remain readable and acquire it after the next accepted
@@ -209,7 +238,8 @@ when material diagram input, tracking mode, or an accepted diagram changed after
 obtain a fresh snapshot instead of overwriting newer work. Valid publications
 cancel obsolete in-flight analysis and become the persisted diagram. Changed
 development evidence can trigger the next automatic update.
-Chat/progress alone does not invalidate the token. Every published citation must
+Non-substantive chat/progress alone does not invalidate the token; meaningful
+parent-objective changes do. Every published citation must
 still belong to the current evidence packet.
 
 ## Evidence boundaries
@@ -219,6 +249,17 @@ does not crawl the repository, read other plugins' storage, or execute model
 output. Reasoning, system instructions, media, and private context/memory tools
 are excluded. Source excerpts are transient; diagrams and citation labels are
 durable. Remote model backends receive the same bounded excerpts.
+
+Selection retains the parent's active meaningful objective across acknowledgements,
+progress, and related-worker traffic. Worker facts can support that objective;
+worker objectives do not become the parent's objective. Bounded evidence roles
+distinguish subject material, supporting facts, and instruction-file context.
+Workflows, tests, and instructions can themselves be explicitly requested subjects;
+roles do not privilege or exclude any of the eight notation families. Evidence
+text, including instruction-file contents, remains untrusted data, not authority.
+Local lexical/path heuristics guide selection without extra model calls. Bounded
+excerpts are not exhaustive semantic analysis, and authoring policy does not
+guarantee exact model compliance.
 
 Selection uses independent fixed budgets for implementation/structural evidence
 and chat/log context. Unused context quota does not expand source excerpts, so

@@ -1,7 +1,33 @@
 # Using diagrams and exports
 
-For installation and selecting the diagram author, start with
+For OpenCode installation and selecting the diagram author, start with
 [setup](setup.md). For programmatic publication, see [the harness](harness.md).
+
+## Standalone MCP and application use
+
+Outside OpenCode, connect a client to the [standalone MCP server](standalone.md)
+or import the [Node API](standalone.md#use-the-shared-node-api). Clients author
+diagrams; the server validates and renders without calling a model.
+
+| Task | MCP operation |
+| --- | --- |
+| Learn the authoring format | `diagram_schema({})` |
+| Create or replace a diagram | `diagram_publish({diagramID, expectedRevision, analysis, sources})` |
+| Discover diagrams and views | `diagram_list({})` |
+| Read accepted graph JSON | `diagram_get({diagramID})` or `resources/read` at `diagram://local/{diagramID}` |
+| Render one view | `diagram_render({diagramID, viewID, format: "svg" or "png"})` |
+| Remove a record | `diagram_remove({diagramID, expectedRevision})` |
+
+Use revision `0` only for creation; fetch the current revision before updating or
+removing. Render options include `colorMode: "light" | "dark"` and `selected`
+(a node ID whose details should expand). SVG is an embedded resource; PNG is an
+image content block. Your client decides how to display or save those outputs.
+
+Standalone storage is process-local and disappears on exit; it does not share
+OpenCode caches or provide Pause/Refresh controls. Retain JSON or exported images
+in your application if needed. See [limits and trust boundaries](standalone.md#lifetime-limits-and-trust-boundary).
+
+The native controls and cache behavior below apply to the **OpenCode plugin**.
 
 ## Native controls
 
