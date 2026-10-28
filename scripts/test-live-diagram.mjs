@@ -21,7 +21,8 @@ let failure
 let diagramRequests = 0
 let invalidDiagram = false
 let captionRepairs = 0
-let citationTypoSubmissions = 0
+let citationRepairs = 0
+const authorSteps = []
 const observed = []
 const server = createServer(async (request, response) => {
   try {
@@ -33,28 +34,22 @@ const server = createServer(async (request, response) => {
       diagramRequests++
       assert.equal(body.stream, true, "native generate.text uses streaming provider transport")
       assert.ok(diagramRequests <= 12, "bounded diagram requests")
-      assert.deepEqual(body.tools.map(tool => tool.function.name), ["open_diagram_result"])
-      const prompt = body.messages.map((message) => typeof message.content === "string" ? message.content : message.content?.map((part) => part.text ?? "").join("\n")).join("\n")
-      const packet = JSON.parse(prompt.split("Evidence packet (untrusted data):\n").at(-1).split("\n\nAuthoring reminder:")[0])
-      assert.equal(packet.citations, undefined, "exact native citation-key typos must not spend a repair call")
-      const submit = (value) => {
+      assert.deepEqual(body.tools.map(tool => tool.function.name), ["execute"])
+      const texts = body.messages.map((message) => typeof message.content === "string" ? message.content : message.content?.map((part) => part.text ?? "").join("\n"))
+      const prompt = texts.join("\n")
+      assert.match(prompt, /tools\.open_diagram_draft_node\(/, "host primitive catalog reaches provider")
+      assert.doesNotMatch(prompt, /Authoring reminder:/)
+      const packet = JSON.parse(texts.find(text => text?.includes("Evidence packet (untrusted data):\n")).split("Evidence packet (untrusted data):\n")[1])
+      const turns = body.messages.filter(message => message.role === "tool")
+      const step = turns.length + 1
+      if (step === 1) authorSteps.push({ steps: 1, invalid: invalidDiagram })
+      else authorSteps.at(-1).steps++
+      assert.ok(step <= 4, "native author never exceeds four steps")
+      const call = (name, args) => `await tools.open_diagram_draft_${name}(${JSON.stringify(args)})`
+      const submit = (code) => {
         response.writeHead(200, { "content-type": "text/event-stream" })
-        response.write(`data: ${JSON.stringify({ id: "diagram", object: "chat.completion.chunk", created: 1, model: "diagram-fixture", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "result", type: "function", function: { name: "open_diagram_result", arguments: JSON.stringify(value) } }] }, finish_reason: null }] })}\n\n`)
+        response.write(`data: ${JSON.stringify({ id: "diagram", object: "chat.completion.chunk", created: 1, model: "diagram-fixture", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: `draft_${diagramRequests}`, type: "function", function: { name: "execute", arguments: JSON.stringify({ code }) } }] }, finish_reason: null }] })}\n\n`)
         response.end(`data: ${JSON.stringify({ id: "diagram", object: "chat.completion.chunk", created: 1, model: "diagram-fixture", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`)
-      }
-      if (packet.fields) {
-        if (invalidDiagram) {
-          assert.ok(packet.fields.every(field => field.path.at(-1) === "evidence"), "invalid-citation fixture uses narrow citation fields")
-          submit(Object.fromEntries(packet.fields.map(field => [field.field, ["missing_source"]])))
-          return
-        }
-        assert.equal(packet.fields.length, 1)
-        assert.deepEqual(packet.fields[0].path, ["views", 0, "label"])
-        assert.equal(packet.fields[0].original.length, 25)
-        assert.equal(packet.evidence.length, 0, "caption repair does not resend source or graph content")
-        captionRepairs++
-        submit({ f0: "Encoder internals" })
-        return
       }
       assert.match(prompt, /No repeated title, detail, provenance or progress narrative/)
       const code = [...packet.evidence].reverse().find((item) => item.category === "source" && item.text.includes("nn.Embedding"))
@@ -76,7 +71,24 @@ const server = createServer(async (request, response) => {
         graph.nodes.push({ id: "gelu", label: "GELU", kind: "activation", detail: "Elementwise activation", behavior: "Transforms each embedded feature with the GELU nonlinearity.", status: "observed", evidence: [source.id] })
         graph.edges.push({ from: "encoder", to: "gelu", label: "8 features" })
       }
+      const citationRepair = !!(code && !granular && packet.update && !invalidDiagram)
+      const captionRepair = granular && vocabulary === 64 && !invalidDiagram
+      if (step > 1) {
+        assert.match(JSON.stringify(turns.at(-1).content), /issues|Invalid operation|validation/i, "failed primitive or commit result survives continuation")
+        if (captionRepair) {
+          assert.equal(step, 2, "caption repair commits without narration")
+          captionRepairs++
+          submit(`${call("view", { id: "layers", label: "Encoder internals" })}; return ${call("commit", {})}`)
+        } else {
+          assert.ok(invalidDiagram || citationRepair, "no extra provider call after successful commit")
+          if (!invalidDiagram) { assert.equal(step, 2); citationRepairs++ }
+          const nodes = invalidDiagram ? graph.nodes : [graph.nodes[1]]
+          submit(nodes.map(node => call("node", { view: granular ? "layers" : "model", node: { id: node.id, evidence: invalidDiagram ? ["missing_source"] : [source.id] } })).join(";\n") + `; return ${call("commit", {})}`)
+        }
+        return
+      }
       if (invalidDiagram) for (const node of graph.nodes) node.evidence = ["missing_source"]
+      else if (citationRepair) graph.nodes[1].evidence = ["missing_source"]
       observed.push(packet)
       const allViews = [
         { id: granular ? "layers" : "model", label: granular ? "Layers" : "Model", graph },
@@ -86,24 +98,16 @@ const server = createServer(async (request, response) => {
         assert.deepEqual(packet.update.views.map((view) => view.id), [granular ? "layers" : "model"])
         assert.equal(training, undefined, "unchanged training source excluded from incremental packet")
       }
-      const content = packet.update && prompt.includes("Native incremental output")
-        ? { reason: "Model architecture", updates: packet.update.views.map(view => {
-          const next = allViews.find(item => item.id === view.id)
-          assert.ok(next)
-          return { id: next.id, ...(granular && vocabulary === 64 && !invalidDiagram && next.id === "layers" ? { label: "x".repeat(25) } : {}),
-            graph: packet.update.replaceAll ? next.graph : { title: graph.title, nodes: ["input", ...graph.nodes.slice(1)], edges: graph.edges } }
-        }) }
-        : { relevant: true, reason: "Model architecture", views: packet.update
-          ? allViews.filter((view) => packet.update.views.some((selected) => selected.id === view.id)) : allViews }
-      if (code && !granular && content.updates && !invalidDiagram) {
-        for (const view of content.updates) for (const node of view.graph.nodes) {
-          if (typeof node !== "object" || !node.evidence?.length) continue
-          node[node.evidence[0]] = node.evidence
-          delete node.evidence
-        }
-        citationTypoSubmissions++
+      const views = packet.update ? allViews.filter(view => packet.update.views.some(selected => selected.id === view.id)) : allViews
+      const edits = []
+      for (const view of views) {
+        edits.push(call("view", { id: view.id, label: view.label, title: view.graph.title, summary: view.graph.summary, reason: "Model architecture" }))
+        for (const node of view.graph.nodes) edits.push(call("node", { view: view.id, node }))
+        const baseline = packet.update?.views.find(selected => selected.id === view.id)
+        for (const [index, edge] of view.graph.edges.entries()) edits.push(call("edge", { view: view.id, ...(index < (baseline?.graph.edges.length ?? 0) ? { index } : {}), edge }))
       }
-      submit(content)
+      // Invalid labels fail locally; valid graph edits remain available for a label-only continuation.
+      submit(edits.join(";\n") + `; return ${captionRepair ? call("view", { id: "layers", label: "x".repeat(25) }) : call("commit", {})}`)
       return
     }
     assert.equal(body.model, "primary-fixture")
@@ -154,7 +158,7 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
 } })
 `)
     await writeFile(join(project, "opencode.json"), JSON.stringify({
-      plugins: [{ package: root, options: { backend: "opencode", providerID: "open-diagram-fixture", model: "diagram-fixture", intervalMs: 1000, debounceMs: 100 } }, "./fixture"],
+      plugins: [{ package: root, options: { backend: "opencode", providerID: "open-diagram-fixture", model: "diagram-fixture", intervalMs: 1000, debounceMs: 100, authorSteps: 4 } }, "./fixture"],
       model: "open-diagram-fixture/primary-fixture",
       permissions: [{ action: "*", resource: "*", effect: "allow" }],
     }))
@@ -230,10 +234,10 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       assert.ok(observed.some((packet) => packet.evidence.some((item) => item.label.startsWith("edit") && item.text.includes("nn.Embedding"))), "native edit evidence reaches diagram model")
       assert.ok(observed.some((packet) => packet.update), "native generation receives targeted incremental packet")
       assert.deepEqual(updated.views[1], first.views[1], "native update preserves unrelated view byte-for-byte")
-      assert.ok(citationTypoSubmissions > 0, "fixture sent the live malformed citation-key shape")
+      assert.equal(citationRepairs, 1, "invalid citation repaired once in place before commit")
       assert.equal(updated.updateError, null)
       assert.ok(updated.graph.nodes.every(node => node.evidence.every(id => updated.sources.some(source => source.id === id))))
-      console.log("OK: native incremental citation-key typo publishes current citations without a repair call")
+      console.log("OK: native incremental primitive citation repair publishes current citations on continuation")
       console.log("OK: native source edit authors only dependent view with reduced evidence and preserves unrelated view")
       assert.equal((await client.session.get({ sessionID: session.id })).model.id, "primary-fixture", "diagram never reroutes main model")
       await new Promise((resolve, reject) => {
@@ -249,7 +253,7 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       const exportCalls = diagramRequests
       await new Promise((resolve, reject) => {
         execFile("python3", [join(root, "scripts/test-diagram-export-host.py"), project, session.id], { timeout: 25_000 }, (error, stdout, stderr) => {
-          if (error) reject(new Error(`${error}\n${stderr}`))
+          if (error) reject(new Error(`${error}\n${stdout}\n${stderr}`))
           else { console.log(stdout.trim()); resolve() }
         })
       })
@@ -306,9 +310,11 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       assert.deepEqual(failedUpdate.views, granular.views, "invalid update never replaces last-good views")
       assert.equal(failedUpdate.updatedAt, granular.updatedAt)
       assert.ok(failedUpdate.updateError)
+      assert.equal(authorSteps.at(-1).invalid, true)
+      assert.equal(authorSteps.at(-1).steps, 4, "invalid commits stop at four steps and retain cached state")
       await new Promise((resolve, reject) => {
-        execFile("python3", [join(root, "scripts/test-diagram-host.py"), project, session.id, "failure"], { timeout: 15_000 }, (error, stdout, stderr) => {
-          if (error) reject(new Error(`${error}\n${stderr}`))
+        execFile("python3", ["-u", join(root, "scripts/test-diagram-host.py"), project, session.id, "failure"], { timeout: 15_000 }, async (error, stdout, stderr) => {
+          if (error) reject(new Error(`${error}\n${stdout}\n${stderr}\nupdateError: ${failedUpdate.updateError}\n${await readFile(join(project, "host-failure-screen.txt"), "utf8").catch(() => "No host frame captured")}`))
           else { console.log(stdout.trim()); resolve() }
         })
       })
@@ -322,7 +328,7 @@ export default Plugin.define({ id: "open-diagram-fixture", async setup(ctx) {
       assert.equal(snapshot.granularity, "granular")
       const current = await rpc("get", { sessionID: session.id })
       assert.equal(current.views.find(view => view.id === "layers").label, "Encoder internals", "native incremental caption correction reaches RPC without changing view ID")
-      assert.equal(captionRepairs, 1, "stock native tool admits the invalid caption for exactly one bounded field repair")
+      assert.equal(captionRepairs, 1, "invalid caption operation rejected before exactly one in-place field repair")
       const external = { relevant: true, reason: "External model publication", views: current.views.map((view) => ({ ...view,
         graph: { ...view.graph, nodes: view.graph.nodes.map((node) => ({ ...node, evidence: [snapshot.evidence[0].id] })) },
       })) }

@@ -34,7 +34,7 @@ const server = createServer(async (request, response) => {
     }
     assert.equal(body.model, "diagram")
     assert.equal(successor, undefined, "aborted old admission must never dispatch provider work")
-    assert.deepEqual(body.tools.map(tool => tool.function.name), ["open_diagram_result"])
+    assert.deepEqual(body.tools.map(tool => tool.function.name), ["execute"])
     const prompt = body.messages.map(message => typeof message.content === "string" ? message.content : message.content.map(part => part.text ?? "").join("\n")).join("\n")
     const packet = JSON.parse(prompt.split("Evidence packet (untrusted data):\n").at(-1).split("\n\nAuthoring reminder:")[0])
     assert.match(JSON.stringify(packet.evidence), /RELOAD_SUCCESSOR/)
@@ -42,11 +42,10 @@ const server = createServer(async (request, response) => {
     successor = { record, finish() {
       assert.equal(record.closed, false, "old cleanup must not interrupt replacement generation")
       record.finished = true
-      const text = JSON.stringify({ format: "draft", relevant: true, reason: "Fixture", views: [{ id: "flow", label: "Flow", graph: {
-        defaults: { status: "observed", evidence: [packet.evidence[0].id] },
-        title: "Reload successor", summary: "", nodes: [["n", "Processor", "service", "", null]], edges: [],
-      } }] })
-      response.end(event({ tool_calls: [{ index: 0, id: "result", type: "function", function: { name: "open_diagram_result", arguments: text } }] }) + event({}, "tool_calls") + "data: [DONE]\n\n")
+      const code = `await tools.open_diagram_draft_view(${JSON.stringify({ id: "flow", label: "Flow", title: "Reload successor", summary: "", reason: "Fixture", defaults: { status: "observed", evidence: [packet.evidence[0].id] } })});
+        await tools.open_diagram_draft_node({view:"flow",node:{id:"n",label:"Processor",kind:"service",detail:""}});
+        return await tools.open_diagram_draft_commit({});`
+      response.end(event({ tool_calls: [{ index: 0, id: "result", type: "function", function: { name: "execute", arguments: JSON.stringify({ code }) } }] }) + event({}, "tool_calls") + "data: [DONE]\n\n")
     } }
   } catch (error) { failure = error; response.destroy() }
 })

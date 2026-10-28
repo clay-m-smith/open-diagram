@@ -27,22 +27,21 @@ const server = createServer(async (request, response) => {
     const body = JSON.parse(Buffer.concat(chunks).toString())
     assert.equal(request.url, "/v1/chat/completions")
     const event = (delta, finish_reason = null) => `data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 1, model: body.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`
-    const end = (text) => {
-      let structured = false
-      try { JSON.parse(text); structured = body.model === "diagram" } catch {}
-      response.end(event(structured ? { role: "assistant", tool_calls: [{ index: 0, id: "result", type: "function", function: { name: "open_diagram_result", arguments: text } }] }
-        : { role: "assistant", content: text }) + event({}, structured ? "tool_calls" : "stop") + "data: [DONE]\n\n")
-    }
+    const end = (text) => response.end(event({ role: "assistant", content: text }) + event({}, "stop") + "data: [DONE]\n\n")
+    const execute = (code) => response.end(event({ role: "assistant", tool_calls: [{ index: 0, id: `draft_${requests.length}`, type: "function", function: { name: "execute", arguments: JSON.stringify({ code }) } }] }) + event({}, "tool_calls") + "data: [DONE]\n\n")
     if (body.model === "primary") {
       assert.ok(!body.tools?.some(tool => tool.function.name === "open_diagram_result"), "result tool never appears in user chat")
       response.writeHead(200, { "content-type": "text/event-stream" }); end("Architecture request received."); return
     }
     assert.equal(body.model, "diagram")
-    assert.deepEqual(body.tools.map(tool => tool.function.name), ["open_diagram_result"], "diagram model receives only the schema-backed result tool")
-    assert.equal(body.tools[0].function.parameters.type, "object")
-    assert.ok(body.tools[0].function.parameters.properties, "result tool carries a real structured schema")
-    const prompt = body.messages.map(message => typeof message.content === "string" ? message.content : message.content.map(part => part.text ?? "").join("\n")).join("\n")
-    const packet = JSON.parse(prompt.split("Evidence packet (untrusted data):\n").at(-1).split("\n\nAuthoring reminder:")[0])
+    assert.deepEqual(body.tools.map(tool => tool.function.name), ["execute"], "diagram model receives only native Code Mode")
+    const texts = body.messages.map(message => typeof message.content === "string" ? message.content : message.content?.map(part => part.text ?? "").join("\n"))
+    const prompt = texts.join("\n")
+    assert.match(prompt, /tools\.open_diagram_draft_node\(/, "host primitive catalog survives context hooks")
+    assert.doesNotMatch(prompt, /Authoring reminder:/)
+    const packet = JSON.parse(texts.find(text => text?.includes("Evidence packet (untrusted data):\n")).split("Evidence packet (untrusted data):\n")[1])
+    const call = (name, args) => `await tools.open_diagram_draft_${name}(${JSON.stringify(args)})`
+    const compose = (title, evidence) => `${call("view", { id: "flow", label: "Flow", title, summary: "", reason: "Fixture", defaults: { status: "observed", evidence } })}; ${call("node", { view: "flow", node: { id: "n", label: "Node", kind: "service", detail: "" } })}; return ${call("commit", {})}`
     const name = JSON.stringify(packet.evidence).match(/CASE_(INITIAL|NEXT|REPAIR|PAUSE|NODE|TRANSPORT)/)?.[1]
     assert.ok(name, "scenario survived real session evidence collection")
     const record = { name, start: performance.now(), closed: false, finished: false }
@@ -51,31 +50,22 @@ const server = createServer(async (request, response) => {
     if (name === "TRANSPORT") { response.writeHead(503); response.end("Fixture unavailable"); notify(); return }
     response.writeHead(200, { "content-type": "text/event-stream" })
     if (name === "REPAIR" && requests.filter(item => item.name === name).length === 1) {
-      record.finished = true; end("MALFORMED")
+      record.finished = true; execute(compose("Repair deadline", ["missing_source"]))
     } else if (name === "NODE") {
       record.finished = true
-      if (packet.repairs) {
-        assert.equal(packet.repairs.length, 0)
-        assert.equal(packet.citations.length, 1)
-        assert.match(prompt, /do not rewrite them/)
-        assert.equal(packet.previous, undefined)
-        end(JSON.stringify({ repairs: [], citations: packet.citations.map(({ view, node }) => ({ view, node, evidence: [packet.evidence[0].id] })) }))
-      } else end(JSON.stringify({ relevant: true, reason: "Fixture", views: [{ id: "flow", label: "Flow", graph: {
-        title: "Node repair", summary: "", nodes: [{ id: "n", label: "Node", kind: "service", detail: "", status: "observed", sources: [packet.evidence[0].id] }], edges: [],
-      } }] }))
+      if (requests.filter(item => item.name === name).length === 2) {
+        assert.match(body.messages.filter(message => message.role === "tool").map(message => JSON.stringify(message.content)).join("\n"), /issues/, "failed commit remains in continuation")
+        execute(`${call("node", { view: "flow", node: { id: "n", evidence: [packet.evidence[0].id] } })}; return ${call("commit", {})}`)
+      } else execute(compose("Node repair", ["missing_source"]))
     } else if (name !== "NEXT") {
       // Stay open until native cancellation reaches the provider socket.
+      if (name === "REPAIR") assert.match(body.messages.filter(message => message.role === "tool").map(message => JSON.stringify(message.content)).join("\n"), /issues/, "repair continuation retains failed commit")
       response.write(event({ role: "assistant", content: "{" }))
     } else {
       assert.ok(requests.filter(item => item.name === "INITIAL").every(item => item.closed), "timed-out provider connection closed before successor starts")
-      assert.equal(body.tools[0].function.parameters.properties.format.const, "draft", "native provider receives the authoring schema")
-      assert.match(body.tools[0].function.description, /Declare shared status\/citations/, "request-local tool instructions reach provider")
+      assert.match(prompt, /Explicit view defaults/, "request-local primitive instructions reach provider")
       record.finished = true
-      const text = JSON.stringify({ format: "draft", relevant: true, reason: "Fixture", views: [{ id: "flow", label: "Flow", graph: {
-        defaults: { status: "observed", evidence: [packet.evidence[0].id] },
-        title: "Successor", summary: "", nodes: [["n", "Node", "service", "", null]], edges: [],
-      } }] })
-      end(text)
+      execute(compose("Successor", [packet.evidence[0].id]))
     }
     notify()
   } catch (error) { failure = error; response.destroy(); notify() }
@@ -98,7 +88,7 @@ export default Plugin.define({ id: "open-diagram-cancellation-fixture", async se
 } })
 `)
     await writeFile(join(project, "opencode.json"), JSON.stringify({
-      plugins: [{ package: resolve(import.meta.dirname, ".."), options: { backend: "opencode", providerID: "cancellation-fixture", model: "diagram", timeoutMs: 1000, intervalMs: 1000, debounceMs: 100 } }, "./provider"],
+      plugins: [{ package: resolve(import.meta.dirname, ".."), options: { backend: "opencode", providerID: "cancellation-fixture", model: "diagram", timeoutMs: 1000, intervalMs: 1000, debounceMs: 100, authorSteps: 4 } }, "./provider"],
       model: "cancellation-fixture/primary",
     }))
     const location = { directory: project }
@@ -123,14 +113,15 @@ export default Plugin.define({ id: "open-diagram-cancellation-fixture", async se
       await wait(() => states.get(next)?.graph?.title === "Successor" && !!states.get(initial)?.updateError)
       assert.match(states.get(initial).updateError, /initial generation timed out after \d+ms total.*budget 1000ms/)
       assert.equal(requests.filter(item => item.name === "INITIAL").length, 1, "timeout never triggers validation repair")
-      assert.equal(requests.filter(item => item.name === "NEXT").length, 1, "structured result must not trigger a narration call")
+      assert.equal(requests.filter(item => item.name === "NEXT").length, 1, "successful commit must not trigger a narration call")
       assert.equal((await client.session.get({ sessionID: next })).model.id, "primary")
       console.log("OK: native timeout closes provider socket and releases queued successor; primary model unchanged")
       const repair = await start("REPAIR")
       await wait(() => !!states.get(repair)?.updateError && requests.filter(item => item.name === "REPAIR").every(item => item.closed))
-      assert.match(states.get(repair).updateError, /validation repair timed out after \d+ms total.*budget 1000ms/)
+      assert.match(states.get(repair).updateError, /initial generation timed out after \d+ms total.*budget 1000ms/)
       assert.equal(requests.filter(item => item.name === "REPAIR").length, 2)
-      console.log("OK: native repair shares deadline and reports its stage without leaving provider work running")
+      assert.ok(requests.filter(item => item.name === "REPAIR").at(-1).closedAt - requests.find(item => item.name === "REPAIR").start < 1800, "repair continuation shares original 1000ms budget, not a fresh deadline")
+      console.log("OK: native primitive repair shares initial-generation deadline without leaving provider work running")
       const repaired = await start("NODE")
       await wait(() => states.get(repaired)?.graph?.title === "Node repair" || !!states.get(repaired)?.updateError)
       assert.equal(states.get(repaired).updateError, null, JSON.stringify({ state: states.get(repaired), requests }))
@@ -156,11 +147,11 @@ export default Plugin.define({ id: "open-diagram-cancellation-fixture", async se
       const history = await client.session.context({ sessionID: helpers[0].id })
       assert.doesNotMatch(JSON.stringify(history), /CASE_|Evidence packet/, "raw source packet is not saved into helper history")
       const submissions = history.filter(message => message.type === "assistant")
-        .flatMap(message => message.content).filter(part => part.type === "tool" && part.name === "open_diagram_result")
-      assert.equal(submissions.length, 3, "one initial result plus the invalid draft and its citation repair")
-      assert.deepEqual(submissions.map(part => part.state.status), ["completed", "completed", "completed"],
-        "receiving a result must finish the tool, not abort it during session shutdown")
-      console.log("OK: native result submissions persist as completed tools without extra provider calls")
+        .flatMap(message => message.content).filter(part => part.type === "tool" && part.name === "execute")
+      assert.equal(submissions.length, 4, "successor commit, deadline failed commit, invalid draft and citation repair")
+      assert.deepEqual(submissions.map(part => part.state.status), ["completed", "completed", "completed", "completed"],
+        "committing a draft must finish Code Mode, not abort it during session shutdown")
+      console.log("OK: native primitive executions persist as completed tools without extra provider calls")
       const beforeExternalPrompt = requests.length
       await assert.rejects(client.session.prompt({ sessionID: helpers[0].id, text: "Run a shell command" }))
       assert.equal(requests.length, beforeExternalPrompt)

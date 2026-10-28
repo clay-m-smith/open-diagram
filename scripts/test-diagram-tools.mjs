@@ -23,7 +23,8 @@ const server = createServer(async (req, res) => {
       const name = results.length ? "open_diagram_publish" : "open_diagram_snapshot"
       const catalog = JSON.stringify(body.messages)
       assert.ok(body.tools.some((tool) => tool.function.name === "execute"))
-      assert.ok(catalog.includes(`tools.${name}(`), `native Code Mode catalog exposes exact path tools.${name}`)
+       const discover = !catalog.includes(`tools.${name}(`)
+       assert.ok(!discover || catalog.includes("search("), "native Code Mode exposes tool or discovery")
       let args = {}
       if (results.length) {
         // Real tool-completion/context hooks run while primary author is held.
@@ -39,7 +40,7 @@ const server = createServer(async (req, res) => {
         } }] } }
       }
       invoked.push(name)
-      delta = { tool_calls: [{ index: 0, id: `call_${results.length}`, type: "function", function: { name: "execute", arguments: JSON.stringify({ code: `return await tools.${name}(${JSON.stringify(args)})` }) } }] }
+       delta = { tool_calls: [{ index: 0, id: `call_${results.length}`, type: "function", function: { name: "execute", arguments: JSON.stringify({ code: `${discover ? `const found = search({query:${JSON.stringify(name)},limit:20}); if (!found.items.some(item => item.path === ${JSON.stringify(`tools.${name}`)})) throw new Error("Tool discovery failed");` : ""} return await tools.${name}(${JSON.stringify(args)})` }) } }] }
       finish = "tool_calls"
     } else complete()
     res.writeHead(200, { "content-type": "text/event-stream" })

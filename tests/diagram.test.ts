@@ -60,6 +60,9 @@ test("graph validation permits branches and cycles but rejects dangling edges, d
   assert.equal(GraphSchema.safeParse({ ...graph, title: "\x1b]52;c;clipboard" }).success, false)
   assert.throws(() => ConfigSchema.parse({ baseURL: "https://remote.example/v1", model: "free" }), /allowRemote/)
   assert.throws(() => ConfigSchema.parse({ baseURL: "http://name:password@localhost/v1", model: "x" }))
+  assert.equal(ConfigSchema.parse({}).authorSteps, 8)
+  assert.equal(ConfigSchema.parse({ authorSteps: 12 }).authorSteps, 12)
+  for (const authorSteps of [0, 33, 2.5]) assert.equal(ConfigSchema.safeParse({ authorSteps }).success, false)
 })
 
 test("large edits retain replacement architecture and saturated parent context retains child updates", () => {

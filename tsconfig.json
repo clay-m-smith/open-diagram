@@ -9,7 +9,7 @@
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
     "jsx": "preserve",
-    "jsxImportSource": "@opentui/solid",
+    "jsxImportSource": "solid-js",
     "types": [
       "node"
     ]

@@ -29,7 +29,16 @@ in your application if needed. See [limits and trust boundaries](standalone.md#l
 
 The native controls and cache behavior below apply to the **OpenCode plugin**.
 
-## Native controls
+## Desktop controls
+
+Open **+ → Diagram** in the session's side pane. **Live** follows current accepted
+views; **Recent** keeps bounded historical views with their original source labels.
+History is read-only and does not change Live or invoke authoring. See
+[Live and Recent diagrams](setup.md#live-and-recent-diagrams) for retention limits
+and tracking-control behavior. Zoom/fit, node inspection, and Save SVG operate on
+the displayed view; the inspector's native dropdown follows the app's color scheme.
+
+## TUI controls
 
 Each session starts on OpenCode's **Classic sidebar**, with diagram tabs available
 above it. Cached diagrams and live updates do not switch the view automatically.

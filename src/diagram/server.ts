@@ -3,7 +3,8 @@ import { ConfigSchema, type DiagramConfig } from "./config.js"
 import { createDiagramClient } from "./client.js"
 import { collectEvidence, digest, mergeEvidence, type Evidence } from "./evidence.js"
 import { DiagramEngine } from "./engine.js"
-import { DiagramRpc } from "./schema.js"
+import { analysisViews, DiagramRpc, RenderOutputSchema } from "./schema.js"
+import { renderDiagramSVG } from "./export.js"
 import { diagramRequest } from "./harness.js"
 import { registerDiagramTools } from "./tools.js"
 import { registerNativeAuthor } from "./native.js"
@@ -173,6 +174,46 @@ export function defineDiagramPlugin(defaults: Record<string, unknown>, nativeAut
           await localSession(sessionID)
           // Viewing a saved diagram must never collect evidence or invoke a model.
           return engine.get(sessionID)
+        },
+        async history({ sessionID }, request) {
+          await localSession(sessionID, AbortSignal.any([abort.signal, request.signal]))
+          return engine.history(sessionID)
+        },
+        async historyGet({ sessionID, snapshotID }, request) {
+          await localSession(sessionID, AbortSignal.any([abort.signal, request.signal]))
+          const entry = await engine.historyEntry(sessionID, snapshotID)
+          if (!entry) throw request.error("unavailable", "Cached diagram is no longer retained", {})
+          return entry
+        },
+        async renderHistory(input, request) {
+          const signal = AbortSignal.any([abort.signal, request.signal])
+          await localSession(input.sessionID, signal)
+          const entry = await engine.historyEntry(input.sessionID, input.snapshotID)
+          if (!entry || (input.selected && !entry.view.graph.nodes.some(node => node.id === input.selected))) {
+            throw request.error("unavailable", "Cached diagram or selected node is no longer retained", {})
+          }
+          signal.throwIfAborted()
+          const svg = await renderDiagramSVG(entry.view.graph, { colorMode: input.colorMode, selected: input.selected })
+          signal.throwIfAborted()
+          return { sessionID: input.sessionID, snapshotID: entry.id, svg }
+        },
+        async render(input, request) {
+          const signal = AbortSignal.any([abort.signal, request.signal])
+          await localSession(input.sessionID, signal)
+          signal.throwIfAborted()
+          const state = await engine.get(input.sessionID)
+          if (state.epoch !== input.epoch || state.revision !== input.revision) {
+            throw request.error("stale", "Diagram snapshot changed; read the current snapshot", {})
+          }
+          const view = analysisViews(state).find((view) => view.id === input.viewID)
+          if (!view || (input.selected && !view.graph.nodes.some((node) => node.id === input.selected))) {
+            throw request.error("unavailable", "Diagram view or selected node is unavailable", {})
+          }
+          // Render only the accepted snapshot. No collection, control or model call.
+          const svg = await renderDiagramSVG(view.graph, { colorMode: input.colorMode, selected: input.selected })
+          signal.throwIfAborted()
+          return RenderOutputSchema.parse({ sessionID: input.sessionID, viewID: view.id,
+            epoch: state.epoch, revision: state.revision, svg })
         },
         async control({ sessionID, mode, refresh, granularity }, request) {
           const token = Symbol()

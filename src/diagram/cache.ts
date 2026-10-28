@@ -3,6 +3,7 @@ import { digest, type Evidence } from "./evidence.js"
 import { GranularitySchema, StateSchema, ViewAnalysisSchema, type DiagramState, type DiagramView } from "./schema.js"
 import { diagramEvidence } from "./notation.js"
 import { activeRequest, substantiveRequest } from "./focus.js"
+import { HistorySchema, type DiagramHistory } from "./history-model.js"
 
 // Internal durable metadata, never part of the public snapshot/RPC schema.
 // Two accepted entries: one per depth. Failed attempts never replace them.
@@ -19,10 +20,10 @@ export const MemoSchema = z.object({ version: z.literal(1), entries: z.array(Acc
     error: z.string().max(240).regex(/^[^\x00-\x1f\x7f-\x9f]*$/u).optional(),
   }).strict()).max(32).optional(),
 }).strict()
-export const StoredDiagramSchema = StateSchema.extend({ memo: MemoSchema.optional() })
+export const StoredDiagramSchema = StateSchema.extend({ memo: MemoSchema.optional(), history: HistorySchema.optional() })
 export type AcceptedDiagram = z.infer<typeof AcceptedSchema>
 export type DiagramMemo = z.infer<typeof MemoSchema>
-export type StoredDiagram = DiagramState & { memo?: DiagramMemo }
+export type StoredDiagram = DiagramState & { memo?: DiagramMemo; history?: DiagramHistory }
 
 /** Event time/order, progress prose and command logs are not code changes. */
 export function materialEvidence(evidence: readonly Evidence[]): Evidence[] {

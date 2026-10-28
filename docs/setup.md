@@ -6,21 +6,20 @@ process, no secondary model, client-authored diagrams, and local memory-only
 storage. Both paths share the graph schemas and SVG/PNG renderers, but not the
 same session, persistence, or authoring controls.
 
-Open Diagram is an OpenCode **2.x** plugin (`>=2.0.27 <3`), not an OpenCode V1
+Open Diagram targets **OpenCode 2.2.0** (`>=2.2.0 <3`), not an OpenCode V1
 extension. Node.js 22+ is required for the repository tools. Use a supported
 OpenCode 2.x installation; no downgrade to the dependency version in this
 repository is required. Dependency pins and `package-lock.json` make builds
 reproducible; `engines.opencode` describes the host compatibility range.
-The full suite, including isolated native runtime and TUI checks, passes on
-**OpenCode 2.0.27**. Other admitted hosts are not pre-certified by this run.
+Native authoring and SVG RPC have isolated real-host checks on 2.2.0. Desktop
+panel loading and rendering were also observed. The admitted host range does not
+certify every later release.
 
 OpenCode supplies `@opencode/plugin` and `effect` at runtime through peer
 dependencies. Local development pins `@opencode/client`, `@opencode/plugin`, and
-`@opencode/schema` to **2.0.27**, with matching stable **Effect 4.0.1**. Older
-bundled schema dependencies expected prerelease Effect APIs and are incompatible
-with 2.0.27's stable Effect runtime, causing missing HTTP/SSE modules or
-`Schema.isStartsWith` failures. Keep schema and development pins compatible with
-the host-provided runtime; use only public Effect subpaths. See the host's
+`@opencode/schema` to **2.2.0**, with **Effect 4.0.1** and **OpenTUI 0.7.0** peers.
+Keep SDK, schema, OpenTUI, and development pins aligned with the host-provided
+runtime rather than mixing older prerelease APIs. Use only public Effect subpaths. See the host's
 [Effect plugin guidance](https://opencode.ai/v2/docs/build/plugins/effect).
 
 ## 1. Install from this repository
@@ -29,6 +28,7 @@ the host-provided runtime; use only public Effect subpaths. See the host's
 git clone https://github.com/clay-m-smith/open-diagram.git
 cd open-diagram
 npm ci
+npm run build
 pwd
 ```
 
@@ -36,8 +36,19 @@ This is the supported install path today. The package is currently marked
 `private: true`; do not assume `npm install open-diagram` installs this project.
 For future registry distribution, see [publishing](publishing.md).
 
-In the project you want to diagram, merge an entry into `opencode.json` or
-`opencode.jsonc`. Keep other plugins and settings intact:
+### Desktop discovery versus project server configuration
+
+The build produces the prebuilt CommonJS GUI export
+`open-diagram/gui-experimental` at `dist/gui-experimental.cjs`. Desktop uses an
+experimental GUI plugin API; no Electron main-process addition is needed for
+this first panel. For local GUI work, run `npm run dev:gui` in the checkout:
+rebuilds hot reload the GUI plugin in every Desktop window.
+
+Desktop discovers GUI plugins through its **own background server**, using the
+**global** `opencode.json` or `opencode.jsonc` (normally under
+`~/.config/opencode/`). A project-only entry does not provide Desktop GUI
+discovery. To enable Desktop, merge this entry into the global `plugins` array;
+keep all other plugins and settings intact:
 
 ```json
 {
@@ -50,9 +61,23 @@ In the project you want to diagram, merge an entry into `opencode.json` or
 ```
 
 Use the checkout's absolute path, not the target project's path. On Windows,
-forward slashes avoid JSON backslash escaping. The server and TUI entrypoints
-load together; do not register this package twice. Server/plugin configuration
-belongs in `opencode.json(c)`, not `cli.json`.
+forward slashes avoid JSON backslash escaping. One package supplies server, TUI,
+and GUI parts under plugin ID `open-diagram-server`; do not add separate entries
+for its entrypoints. Server/plugin configuration belongs in `opencode.json(c)`,
+not `cli.json`.
+
+Global registration can activate the server plugin in other projects too. Keep
+**`backend: "manual"` globally**: installation must not opt unrelated projects
+into paid authoring. To enable automation, explicitly override this same package's
+options in the **target project's** `opencode.json(c)`, preserving unrelated
+entries and settings. The examples below describe those project-scoped options,
+not replacement global configurations.
+
+The selected session's server must load the server plugin as well. For a separate
+or remote server, install/configure the checkout on that server; discovering the
+GUI locally does not auto-install server code remotely. For **TUI-only** use,
+merge the entry into the target project's `opencode.json(c)` instead; no global
+Desktop registration is needed.
 
 ## 2. Decide who authors diagrams
 
@@ -120,43 +145,54 @@ less granular views. No model is certified here for electrical correctness.
 These settings affect **only** diagram generation. They do not change OpenCode's
 top-level `model`, current chat, agent, or worker routing. The native adapter uses
 stock OpenCode V2 session and tool APIs with this explicit provider/model/variant;
-no patched OpenCode build is required. It can make one
-validation-repair request within the original timeout, so one update may involve
-up to two model calls. It does not retry transport failures or switch providers.
+no patched OpenCode build is required. Native draft authoring defaults to **8
+model steps** within the **original `timeoutMs` deadline** (default 90000 ms),
+including in-place validation repair. It does not retry transport failures or
+switch providers. No step restarts the clock. Set `authorSteps` (integer 1–32) in
+plugin options to tune the bound; higher values can increase model usage. A
+remaining-step countdown encourages composing edits with commit, and the final
+step explicitly asks for commit rather than another inspection-only round trip.
 
 <details>
 <summary><strong>Native authoring internals: drafts, reuse, validation, and cancellation</strong></summary>
 
-For full generation, an author-facing draft JSON Schema is supplied directly as the
-`open_diagram_result` tool's input, not duplicated as schema text in the prompt. The model sees only
-that result tool; file, shell and other tools are denied. A successful submission
-finishes the tool before the adapter interrupts the next model-dispatch boundary,
-without a follow-up narration call. The public tool record is `completed`; the
-managed session can still end as `interrupted` because its continuation was stopped.
-Receipt is not diagram acceptance: invalid arguments still undergo the bounded
-validation/repair path below. This is schema-backed tool calling,
-not a claim that every provider strictly constrains generation: complete graph,
-reference, citation and budget validation still happens before publication.
-Public and endpoint JSON Schemas and runtime validators are unchanged.
-Native drafts use `format:"draft"` with fixed node rows
-`[id,label,kind,detail,behavior,overrides?]` and edge rows
-`[from,to,label,annotation?]`. These omit repeated property names, not content;
-unsupported behavior is `null`. Optional row overrides/annotations may also be
-`null` to mean absent (required family annotations are still validated).
-Each graph explicitly declares shared
-`defaults:{status,evidence}`; individual nodes and notation records override
-citations when their sources differ. The schema lists current citation IDs separately
-from node identifiers. The server never invents a default or silently repairs an
-unknown citation. Node/edge annotations sit directly on the record they describe
-for architecture, flowchart, state, class and ER, eliminating separately counted
-indices and repeated node references. Sequence, timing and circuit retain their
-ordered messages, signals and pin/net relationships. Code expands these declarations
-into the existing canonical graph, then runs the same full validation. Conflicting
-inline/canonical annotations, missing defaults, unknown fields and invalid references
-are rejected. Canonical full replies and the existing incremental shorthand remain
-accepted; stored graphs, external publication and exports do not change format.
-Tool descriptions are request-local: draft, incremental and repair requests explain
-their own output contract rather than using one generic result description.
+The managed author edits a **private canonical draft**, composing these primitive
+tools through native **Code Mode** rather than returning one full tuple result:
+
+- `open_diagram_draft_inspect`: inspect draft, evidence aliases, and remaining budget.
+- `open_diagram_draft_view`: set view metadata, explicit new-node defaults, or reason.
+- `open_diagram_draft_node` / `open_diagram_draft_edge`: add or update graph records.
+- `open_diagram_draft_notation`: edit typed notation fields or records.
+- `open_diagram_draft_remove`: remove views, nodes, edges, or notation records.
+- `open_diagram_draft_validate`: check without publishing or locking the draft.
+- `open_diagram_draft_commit`: validate and submit the complete canonical result.
+
+Only the active managed sidecar can execute these tools; their registered names
+may still be discoverable in other sessions, where calls are rejected. File,
+shell and unrelated tool calls are denied for the managed author.
+**Network limitation:** instructions prohibit network use, but OpenCode 2.2.0's
+native Code Mode `fetch()` can reach the network despite session deny rules.
+This integration accepts that native capability; it does not claim network
+isolation. Keep automatic authoring disabled when enforceable isolation is required.
+Edits can temporarily leave incomplete records or dangling references. Failed
+validation or commit returns issues and keeps the draft editable for in-place
+repair. Commit must pass complete schema, reference, notation, citation, allowed
+view, and node-budget validation. Explicit defaults seed new nodes only; citations
+are not guessed. The draft is bounded to **256 mutations** and **128 KiB**, with
+by default **8 model steps** (`authorSteps`) sharing the original deadline. These are model-step
+and draft limits, not a two-tool-call limit.
+
+A successful commit finishes its tool, then stops the next model dispatch without
+a follow-up narration call; later edits/commits are rejected. The managed session
+may end as `interrupted` because continuation was stopped. Failed or uncommitted
+drafts never replace the last accepted diagram. GUI read/render/save uses accepted
+output and adds no model call.
+
+**Legacy compatibility fallback only:** the internal `open_diagram_result` and
+bounded targeted/full-result repair machinery remain available for older result
+requests, including compact tuple drafts and incremental shorthand. They are not
+the current primitive native authoring workflow. Public/manual publication and
+endpoint JSON Schemas, runtime validators, stored graphs, and exports are unchanged.
 One reusable **Diagram author (managed)** session is retained per location. It uses
 the stock `general` agent without modifying its definition, and may appear in the
 session list. Do not use it as a chat session. Each request replaces model context
@@ -171,7 +207,7 @@ When material sources exist, native requests use the same material boundary as
 the cache plus the active meaningful parent request, rather than resending progress summaries
 and unrelated command output. Source-associated mutation records remain included;
 request-only/non-code sessions keep their full evidence path.
-Repair receives safe field-level validation details, including exact code-owned
+Legacy fallback repair receives safe field-level validation details, including exact code-owned
 notation rules. Invalid tab labels, prose lengths, and draft defaults use an exact-field
 repair when all other constraints pass a diagnostic probe. Only model-supplied
 replacements enter the result; defaults are never truncated or guessed. Text-only
@@ -191,8 +227,8 @@ after merging. Other failures still use one complete-output repair; invalid outp
 never becomes an accepted diagram merely because it was called a repair.
 JSON failures expose only a fixed syntax category and character count (plus a
 numeric parser offset when available), never the parser's raw response excerpt.
-Known source edits use incremental authoring even when they affect the only view
-or every existing view. The native model can reference unchanged nodes and omit
+In the legacy fallback, known source edits use incremental authoring even when they affect the only view
+or every existing view. The model can reference unchanged nodes and omit
 unchanged graph fields instead of reprinting cached descriptions, edges and notation.
 An existing node object may contain only its ID and changed fields; omitted fields
 are retained exactly. New nodes must satisfy the complete canonical node schema.
@@ -230,11 +266,12 @@ must be reconciled with current task context and source/configuration evidence.
 Bounded subject/support evidence selection uses local heuristics, not extra model
 calls. These preferences and authoring instructions are not exhaustive semantic
 analysis or a guarantee of exact model compliance.
-Malformed direct group membership, oversized supplied prose, and supported
+In the legacy fallback, malformed direct group membership, oversized supplied prose, and supported
 citation-array faults can use exact-field repair after incremental expansion.
 Unchanged fields remain exact; the completed result still passes full canonical
 schema, reference, citation and node-budget validation. The shared 90-second
-default deadline and at-most-one-repair limit are unchanged.
+default deadline applies; the at-most-one extra repair limit belongs to this
+legacy result path, not the primitive draft loop.
 The server uses public session interruption to propagate deadline,
 Pause, and unload cancellation to the provider transport. It waits for interruption
 cleanup before releasing the project's generation slot; it does not abandon a
@@ -290,11 +327,15 @@ there instead.
 
 ## 3. Load or change the configuration
 
-1. Save the target project's `opencode.json(c)`.
-2. Launch OpenCode in that project. If it is already running, run `opencode reload`
-   from the target project. Reopen the TUI if the new plugin surface has not loaded.
-3. Run `/open-diagram`. The default surface is the native sidebar; use
-   `/open-diagram panel` for more room.
+1. Save the appropriate global discovery and/or target-project server config,
+   preserving unrelated settings. Build the GUI first with `npm run build`.
+2. Launch OpenCode in that project. For a running session, use **`/reload`** to
+   reload configuration. Configuration changes do not call for an arbitrary
+   service restart. GUI rebuild hot reload is separate from server config reload.
+3. **Desktop:** select a session, then **+ → Diagram** or command-palette
+   **Open Diagram** (`open-diagram-server.open-diagram`). **TUI:** run
+   `/open-diagram`; Classic sidebar is the default, with `/open-diagram panel`
+   for more room.
 4. After changing backend/model/variant, inspect status and use **Refresh** if an
    update is needed. Author-setting changes invalidate automatic cache reuse
    across configurations; existing accepted output stays visible until replaced.
@@ -309,13 +350,35 @@ other plugin entries or change host theme settings to configure this plugin.
    A filename alone does not provide the plugin with that file's contents.
 2. In automatic mode, wait for development activity to schedule generation, or
    click **Refresh**. In manual mode, ask the agent to publish explicitly.
-3. Confirm an accepted diagram appears. Select a node and open **Sources** to
-   inspect its grounding. Check pin assignments, message order, and timing values
-   against the source—not just whether the diagram looks plausible.
-4. Try **Overview / Granular**, panel/fullscreen, and an SVG or PNG export. These
-   exports use the active cached graph, not another model request.
+3. Confirm an accepted diagram appears. In Desktop use **Inspect node**; in TUI
+   select a node and open **Sources**. Check grounding, pin assignments, message
+   order, and timing values against sources—not just visual plausibility.
+4. **Desktop:** switch view tabs, try **Overview / Granular**, **− / + / Fit**
+   zoom, scrolling to pan, and **Save SVG** through the host save dialog. This is
+   a **read-only SVG viewer**, not a canvas editor; inspector source labels are
+   not clickable resolved file links. No PNG action is included in this first GUI
+   slice. **TUI:** panel/fullscreen and SVG/PNG exports remain available. Reading,
+   rendering, inspecting, and saving accepted output do not call a model.
 5. Pause tracking when you do not want updates. Refresh while paused recollects
    evidence but does not run inference.
+
+### Live and Recent diagrams
+
+Desktop's **Live** tabs follow current accepted output. The **Recent** row retains
+older accepted views, each identified by its original label, depth, and time.
+Selecting a recent diagram leaves Live unchanged even when a new result arrives;
+inspection and SVG export use that historical graph and its original source labels.
+Select **Live** or a current-view tab to return. Overview/Granular returns to Live;
+Pause/Resume/Refresh always controls live tracking, not a historical snapshot.
+
+History is stored by the server, scoped to the session and workspace, independently
+of the two-entry inference memo. It holds at most **24 view snapshots** and **1 MiB
+of serialized history per session**. Identical content is deduplicated; oldest
+entries expire first. If the selected snapshot expires, the panel explicitly returns
+to Live. Failures and incomplete authoring drafts are never archived. Viewing history
+does not collect evidence or call a model, and it is never supplied as new evidence
+to the author. History survives reloads. Legacy caches seed it from retained current
+and depth-cached views only; previously discarded diagrams cannot be recovered.
 
 ## Publish a diagram
 
@@ -334,7 +397,7 @@ This is **diagram publication into a session**, not npm package publication.
 5. If the snapshot is stale, obtain a new snapshot and revise the analysis. Never
    reuse an old token to overwrite newer work. Invalid output leaves the last
    accepted diagram intact.
-6. Inspect the result in the TUI. Accepted views persist, including while tracking
+6. Inspect the result in Desktop or the TUI. Accepted views persist, including while tracking
    is paused. Tool permissions use those exact names; grant them through your
    normal OpenCode permission policy rather than disabling permissions globally.
 
@@ -344,13 +407,23 @@ TypeScript imports, RPC examples, limits, and incremental behavior.
 
 ## Cost and troubleshooting
 
-- **Plugin fails to load after a host/dependency upgrade:** run `npm ci` in this
-  checkout and check the supported host version above. A running service can
-  retain old dependency modules across project reloads. If fresh isolated checks
-  pass but service logs still report removed APIs such as `Schema.isStartsWith`,
-  run `opencode service restart` at a safe stopping point. This can interrupt
-  active sessions/tool calls; reconcile surviving external jobs before resuming.
-  Do not delete session databases or caches to work around the error.
+- **Plugin fails to load after a host/dependency upgrade:** check the 2.2.0 SDK
+  and 0.7.0 OpenTUI alignment above, run `npm ci` and `npm run build` in the
+  checkout, then `/reload` configuration. Diagnose logs before considering any
+  service restart; restarting can interrupt active sessions/tool calls. Do not
+  delete session databases or caches to work around an error.
+- **Desktop panel missing:** confirm the global discovery entry, built
+  `dist/gui-experimental.cjs`, selected session, and that session's server plugin
+  configuration. Project-only configuration is not global GUI discovery; local
+  discovery does not install the plugin on a remote server.
+- **First GUI export added while OpenCode 2.2.0 was already running:** this host
+  can retain the package's old export inventory. We reproduced a missing GUI
+  advertisement after manifest changes, source changes, and configuration reload;
+  a fresh service discovered the same bundle. If the active plugin still reports
+  server/TUI/RPC but no GUI after building and reloading, stop other active work
+  and run `opencode service restart` from an external terminal, then reconnect
+  Desktop. This interrupts sessions; it is a one-time recovery for stale export
+  discovery, not a requirement for ordinary configuration edits or GUI rebuilds.
 - **Empty diagram in manual mode:** expected until an author publishes. Refresh
   is not an instruction to your chat agent and cannot generate a manual diagram.
 - **Configured model unavailable:** check exact provider/model IDs and provider
@@ -365,7 +438,8 @@ TypeScript imports, RPC examples, limits, and incremental behavior.
   implementation if session evidence is incomplete.
 - **Failed update:** the last valid graph remains visible with a warning. Change
   material evidence or explicitly Refresh to retry; there is no same-input retry
-  loop. Native malformed-output repair is separately bounded to one extra call.
+  loop. Native draft repair shares the configured `authorSteps` limit and original deadline;
+  only the legacy result fallback uses the older one-extra-repair limit.
 - **Generation timeout:** this is the plugin's total wall-clock budget, not proof
   that the provider returned a timeout. The warning identifies initial generation,
   targeted repair, full validation repair, or endpoint request, with total/stage
@@ -383,6 +457,7 @@ Viewing, scrolling, selection, tabs, and exports never trigger inference.
 Generation charges and primary-agent costs still follow your provider's terms.
 
 Official host references: [plugins](https://opencode.ai/v2/docs/build/plugins),
+[Desktop GUI plugins](https://opencode.ai/v2/docs/build/plugins/gui),
 [models](https://opencode.ai/v2/docs/models/),
 [providers](https://opencode.ai/v2/docs/providers/),
 [configuration](https://opencode.ai/v2/docs/config/).

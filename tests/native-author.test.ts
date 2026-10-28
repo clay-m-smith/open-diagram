@@ -18,7 +18,7 @@ for (const rejectedAdmission of [false, true]) test(`native cancellation drains 
     session: {
       hook: async (name: string, hook: (event: any) => void) => { hooks.set(name, hook) },
       create: async (input: any) => { session = { ...input, projectID: "project", location: { directory: "/fixture" } }; return session },
-      get: async () => session, switchModel: async () => {},
+      get: async () => session, switchModel: async () => {}, update: async () => {},
       prompt: async (input: any) => {
         hooks.get("prompt")!({ ...input, sessionID: input.sessionID })
         start()
@@ -86,7 +86,7 @@ test("native admission cancellation drains its finalizer before releasing genera
     session: {
       hook: async (name: string, hook: (event: any) => void) => { hooks.set(name, hook) },
       get: async () => ({ location: { directory: "/fixture" }, projectID: "project", metadata: { openDiagram: true } }),
-      switchModel: async () => {}, wait: async () => {},
+      switchModel: async () => {}, update: async () => {}, wait: async () => {},
       interrupt: async () => { interrupts++ },
       prompt: async (_input: unknown, options?: { signal?: AbortSignal }) => {
         entered()

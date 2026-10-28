@@ -12,6 +12,7 @@ export const ConfigSchema = z.object({
   intervalMs: z.number().int().min(1000).max(300_000).default(20_000),
   debounceMs: z.number().int().min(100).max(30_000).default(1500),
   timeoutMs: z.number().int().min(1000).max(180_000).default(90_000),
+  authorSteps: z.number().int().min(1).max(32).default(8),
   maxTokens: z.number().int().min(256).max(8192).default(6144),
   // Adapter-owned generation hints; cannot replace prompts, model, or transport.
   thinkingBudget: z.number().int().min(0).max(2048).optional(),

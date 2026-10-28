@@ -33,19 +33,19 @@ they must not call paid models or modify the shared OpenCode service.
 Native runtime checks need `opencode` and `python3`. Use Node 26.4+ for the native
 OpenTUI test rather than treating an older-Node skip as proof of rendering.
 Record the exact `opencode --version` used. Host compatibility is OpenCode 2.x
-(`>=2.0.27 <3`); dependency pins do not require the user to downgrade the host.
-Current full verification used OpenCode **2.0.27**; update verified-version
+(`>=2.2.0 <3`); dependency pins do not require the user to downgrade the host.
+Current full verification used OpenCode **2.2.0**; update verified-version
 statements only after recording completed checks.
 Do not describe an untested future minor release as already verified.
-The existing native runtime harness accepts 2.0.27–2.0.x, not 2.1.x; use an
-isolated matching binary to reproduce that proof without replacing a user's CLI.
+The native runtime harness requires 2.2.0 or later within 2.x; use an isolated
+matching binary to reproduce that proof without replacing a user's CLI.
 Standalone checks need no OpenCode process. They exercise the actual MCP launcher
 outside its checkout, both protocol eras, JSON resources and SVG/PNG output while
 denying host imports and network fetches.
 
 The host supplies `@opencode/plugin` and `effect` as peer runtime dependencies;
-local client/plugin/schema development pins match **2.0.27** and stable
-**Effect 4.0.1**. Older bundled schema dependencies expected prerelease Effect
+local client/plugin/schema development pins match **2.2.0**, **OpenTUI 0.7.0**, and
+stable **Effect 4.0.1**. Older bundled schema dependencies expected prerelease Effect
 APIs incompatible with that stable host runtime. Review dependency alignment and
 public Effect subpaths when changing host support; see [setup](setup.md).
 
@@ -80,8 +80,10 @@ Before a registry release, the maintainer must:
 5. Choose the release version. Use the normal npm version workflow and review the
    resulting manifest/lockfile changes and any generated commit/tag.
 6. Repeat verification and inspect `npm pack --dry-run`. The package must contain
-    `server.ts`, `tui.tsx`, `mcp.mjs`, `src`, and its linked documentation/images.
-    Preserve `./harness`, `./rpc`, `./core`, `./mcp`, and the native TUI entrypoint.
+    `server.ts`, `tui.tsx`, `mcp.mjs`, `src`, `dist/gui-experimental.cjs`, and its
+    linked documentation/images. `npm run verify` builds the GUI bundle.
+    Preserve `./harness`, `./rpc`, `./core`, `./mcp`, the native TUI entrypoint,
+    and the `./gui-experimental` export.
     Keep `tsx` and the MCP server SDK available as runtime dependencies for the
     source-based standalone launcher. Exclude local-only notes from the package.
 7. Run `npm pack` and smoke-test that tarball in a disposable project with the

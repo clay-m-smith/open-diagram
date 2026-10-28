@@ -33,6 +33,45 @@ function fixture(analyze: NonNullable<EngineDependencies["analyze"]>) {
   return { saved, deps, writes: () => writes }
 }
 
+test("display history retains accepted versions across reload without changing live state or inference memo", async () => {
+  let calls = 0
+  const h = fixture(async () => { calls++; return analysis() })
+  const deps = { ...h.deps, analyze: undefined }
+  let engine = new DiagramEngine(deps)
+  try {
+    await engine.observe("history", evidence)
+    let draft = await engine.snapshot("history")
+    await engine.submit("history", draft.token, { relevant: true, reason: "First", views })
+    const initialHistory = await engine.history("history")
+    assert.equal(initialHistory.length, 2)
+    const oldID = initialHistory.find(item => item.viewID === "model")!.id
+    draft = await engine.snapshot("history")
+    await engine.submit("history", draft.token, { relevant: true, reason: "Changed", views: [view("model", "model_source", "New model"), views[1]] })
+    const history = await engine.history("history")
+    assert.equal(history.length, 3, "unchanged training view is deduplicated")
+    assert.equal(history.find(item => item.id === oldID)?.current, false)
+    assert.equal((await engine.historyEntry("history", oldID))!.view.graph.nodes[0].label, "model")
+    const live = await engine.get("history")
+    assert.equal(live.views[0].graph.nodes[0].label, "New model")
+    assert.equal("history" in live, false, "TUI state/events do not contain full archives")
+    assert.equal(h.saved.get("history")!.memo!.entries.length, 1, "generation cache stays one entry per depth")
+    await assert.rejects(engine.submit("history", draft.token, { relevant: true, reason: "Old token", views }))
+    assert.deepEqual(await engine.history("history"), history)
+    await engine.dispose(); engine = new DiagramEngine(deps)
+    assert.deepEqual(await engine.history("history"), history)
+    const copy = await engine.historyEntry("history", oldID)
+    copy!.view.graph.title = "External mutation"
+    assert.notEqual((await engine.historyEntry("history", oldID))!.view.graph.title, "External mutation")
+    assert.equal(await engine.historyEntry("other-session", oldID), undefined)
+    assert.equal(calls, 0, "history reads are model-free")
+    await engine.dispose()
+    delete h.saved.get("history")!.history
+    engine = new DiagramEngine(deps)
+    assert.equal((await engine.get("history")).views[0].graph.nodes[0].label, "New model")
+    assert.equal((await engine.history("history")).length, 2, "legacy caches seed only retained accepted views")
+  } finally { await engine.dispose() }
+})
+
 test("accepted diagrams survive reload and both depths; Refresh, timestamps and progress have zero authoring cost", async () => {
   let calls = 0
   const h = fixture(async (_e, _p, _f, _s, depth) => { calls++; return analysis(views.map((item) => ({ ...item, graph: { ...item.graph, summary: depth } }))) })

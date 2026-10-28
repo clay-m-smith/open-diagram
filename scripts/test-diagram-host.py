@@ -33,6 +33,8 @@ screen = TerminalScreen(170, 55)
 sidebar_left = 128
 ready_position = None
 ready_since = 0
+tab_position = None
+tab_since = 0
 pan_remaining = 0
 next_pan = 0
 def click(position):
@@ -40,6 +42,7 @@ def click(position):
     os.write(master, f"\x1b[<0;{x + 2};{y + 1}M\x1b[<0;{x + 2};{y + 1}m".encode())
 def terminate(_signal, _frame):
     # execFile cancellation must unwind finally, not orphan the owned TUI.
+    print(f"Native host stopped at stage {stage}:\n{screen.text(sidebar_left)}", file=sys.stderr, flush=True)
     raise SystemExit(128 + _signal)
 signal.signal(signal.SIGTERM, terminate)
 try:
@@ -49,7 +52,7 @@ try:
         readable, _, _ = select.select([master], [], [], wait)
         # A stable final paint need not emit another frame. Advance initial
         # readiness on select timeouts too, without retrying the eventual click.
-        if readable or (stage == 0 and ready_position is not None) or (viewport_mode and stage == 1):
+        if readable or (stage == -1 and tab_position is not None) or (stage == 0 and ready_position is not None) or (viewport_mode and stage == 1):
             try:
                 data = os.read(master, 65536) if readable else b""
             except OSError as error:
@@ -58,6 +61,9 @@ try:
                 raise
             output.extend(data)
             screen.feed(data)
+            if failure_mode:
+                with open(os.path.join(project, "host-failure-screen.txt"), "w") as diagnostic:
+                    diagnostic.write(f"stage={stage}\n{screen.text()}")
             if len(output) > 1024 * 1024:
                 del output[:-1024 * 1024]
             # Answer standard terminal capability/background/cursor probes.
@@ -72,8 +78,13 @@ try:
             text = screen.text()
             if viewport_mode:
                 if stage == -1 and all(screen.find(label) for label in ["[Classic sidebar]", "[circuit]", "Context"]):
+                    position = screen.find("[circuit]")
+                    if position != tab_position:
+                        tab_position, tab_since = position, time.monotonic()
+                    if time.monotonic() - tab_since < 0.15:
+                        continue
                     sidebar_left = screen.find("View ")[0]
-                    click(screen.find("[circuit]"))
+                    click(position)
                     stage = 0
                 elif stage == 0 and screen.find("I2C sensor circuit") and screen.find("┌─Controller board (sheet)"):
                     position = (screen.find("I2C sensor circuit"), screen.find("┌─Controller board (sheet)"))
@@ -101,13 +112,20 @@ try:
                     break
                 continue
             if stage == -1 and all(screen.find(label) for label in ["[Classic sidebar]", "[Files]", "Context", "[Layers]" if failure_mode else "[Model]"]):
+                # Startup text can precede final tab hitboxes. Wait for one stable
+                # target before the sole click; never retry a failed interaction.
+                position = screen.find("[Layers]" if failure_mode else "[Model]")
+                if position != tab_position:
+                    tab_position, tab_since = position, time.monotonic()
+                if time.monotonic() - tab_since < 0.15:
+                    continue
                 sidebar_left = screen.find("View ")[0]
                 assert "[Overview]" not in screen.text(sidebar_left), "Cached diagrams must not take over the default sidebar"
                 print("OK: actual native TUI starts on Classic sidebar with diagram tabs retained")
-                click(screen.find("[Layers]" if failure_mode else "[Model]"))
+                click(position)
                 stage = 0
             if failure_mode:
-                if "Embedding 32" in screen.text() and "GELU" in screen.text() and "Field repair" in screen.text():
+                if all(word in screen.text() for word in ["Embedding 32", "GELU", "Encoder layers · stale", "commit", "steps"]):
                     print("OK: actual native TUI retains cached layers beside failed-update warning")
                     stage = 8
                     break

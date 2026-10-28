@@ -14,6 +14,7 @@
   "exports": {
     ".": "./server.ts",
     "./tui": "./tui.tsx",
+    "./gui-experimental": "./dist/gui-experimental.cjs",
     "./harness": "./src/diagram/harness.ts",
     "./rpc": "./src/diagram/schema.ts",
     "./core": "./src/core.ts",
@@ -22,6 +23,7 @@
   "files": [
     "server.ts",
     "tui.tsx",
+    "dist",
     "mcp.mjs",
     "src",
     "docs",
@@ -29,15 +31,17 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "dev:gui": "vite build --watch",
     "test": "tsx --test tests/*.test.ts",
-    "verify": "npm run typecheck && npm test",
+    "verify": "npm run typecheck && npm run build && npm test",
     "mcp": "node mcp.mjs",
     "docs:images": "node --import tsx scripts/render-readme.mjs",
     "docs:check": "node --import tsx scripts/render-readme.mjs --check"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",
-    "@opencode/schema": "2.0.27",
+    "@opencode/schema": "2.2.0",
     "@resvg/resvg-js": "2.6.2",
     "elkjs": "0.12.0",
     "string-width": "7.2.0",
@@ -45,22 +49,24 @@
     "zod": "4.1.8"
   },
   "peerDependencies": {
-    "@opencode/plugin": ">=2.0.27 <3",
+    "@opencode/plugin": ">=2.2.0 <3",
     "effect": "^4.0.1",
-    "@opentui/core": ">=0.5.17 <0.6.0",
-    "@opentui/solid": ">=0.5.17 <0.6.0",
+    "@opentui/core": "0.7.0",
+    "@opentui/solid": "0.7.0",
     "solid-js": ">=1.9.0 <2.0.0"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.4.0",
-    "@opencode/client": "2.0.27",
-    "@opencode/plugin": "2.0.27",
+    "@opencode/client": "2.2.0",
+    "@opencode/plugin": "2.2.0",
     "@types/node": "24.12.2",
     "effect": "4.0.1",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vite": "^7.0.0",
+    "vite-plugin-solid": "^2.11.0"
   },
   "engines": {
     "node": ">=22",
-    "opencode": ">=2.0.27 <3"
+    "opencode": ">=2.2.0 <3"
   }
 }

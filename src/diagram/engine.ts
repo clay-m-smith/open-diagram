@@ -5,6 +5,8 @@ import { validateDiagramOutput } from "./harness.js"
 import { affectedViews, evidenceKey, fingerprintKey, evidenceFingerprints, MemoSchema, type AcceptedDiagram, type DiagramMemo, type StoredDiagram } from "./cache.js"
 import type { DiagramUpdate } from "./schema.js"
 import { diagramEvidence, notationSignature } from "./notation.js"
+import { rememberHistory, restoreHistory, summarizeHistory } from "./history.js"
+import type { DiagramHistory, DiagramHistoryEntry, DiagramHistorySummary } from "./history-model.js"
 
 type Entry = {
   state: DiagramState
@@ -17,6 +19,7 @@ type Entry = {
   users: number
   dirty: boolean
   memo: DiagramMemo
+  history: DiagramHistory
   workKey?: string
   pendingRetry?: boolean
   unscheduled?: boolean
@@ -80,20 +83,31 @@ export class DiagramEngine {
     const promise = (async () => {
       let state = initialState(sessionID)
       let memo: DiagramMemo = { version: 1, entries: [] }
+      let history: DiagramHistory = { version: 1, entries: [] }
       try {
         const value = await this.deps.load(sessionID)
-        const { memo: storedMemo, ...snapshot } = value && typeof value === "object" ? value as StoredDiagram : {} as StoredDiagram
+        const { memo: storedMemo, history: storedHistory, ...snapshot } = value && typeof value === "object" ? value as StoredDiagram : {} as StoredDiagram
         const saved = StateSchema.safeParse(snapshot)
         if (value != null && (!saved.success || saved.data.sessionID !== sessionID)) throw new Error("Invalid cache record")
         const parsedMemo = MemoSchema.safeParse(storedMemo)
         if (parsedMemo.success) memo = parsedMemo.data
+        history = restoreHistory(storedHistory)
         if (saved.success && saved.data.sessionID === sessionID) {
           state = { ...saved.data, collectionError: null, phase: saved.data.mode === "off" ? "paused" : saved.data.graph ? "ready" : "watching", stale: !!saved.data.graph }
+        }
+        // Upgrade old caches using only accepted views still retained locally.
+        // Historical diagrams are presentation data, never inference baselines.
+        if (!history.entries.length) {
+          const seeds = memo.entries.map(item => ({ views: item.analysis.views, sources: item.sources,
+            granularity: item.granularity, updatedAt: item.updatedAt }))
+          if (state.updatedAt !== null) seeds.push({ views: analysisViews(state), sources: state.sources,
+            granularity: state.granularity, updatedAt: state.updatedAt })
+          for (const seed of seeds.sort((a, b) => a.updatedAt - b.updatedAt)) history = rememberHistory(history, seed)
         }
       } catch { throw new Error("Diagram cache read failed; retry before changing tracking state") }
       // A new incarnation after eviction must not reuse an older revision frontier.
       state.epoch = randomUUID()
-      const entry: Entry = { state, evidence: [], hash: "", generation: 0, pending: false, due: 0, failures: 0, users: reservation.users, dirty: false, memo }
+      const entry: Entry = { state, evidence: [], hash: "", generation: 0, pending: false, due: 0, failures: 0, users: reservation.users, dirty: false, memo, history }
       if (!this.disposed) this.entries.set(sessionID, entry)
       return entry
     })()
@@ -112,7 +126,7 @@ export class DiagramEngine {
     void this.drainPublications(entry)
     if (persist) {
       entry.dirty = true
-      entry.pendingSave = { ...state, cacheError: null, collectionError: null, memo: structuredClone(entry.memo) }
+      entry.pendingSave = { ...state, cacheError: null, collectionError: null, memo: structuredClone(entry.memo), history: structuredClone(entry.history) }
       void this.drainSaves(entry)
     }
   }
@@ -165,6 +179,16 @@ export class DiagramEngine {
   async get(sessionID: string): Promise<DiagramState> {
     const entry = await this.entry(sessionID)
     try { return structuredClone(entry.state) } finally { entry.users-- }
+  }
+
+  async history(sessionID: string): Promise<DiagramHistorySummary[]> {
+    const entry = await this.entry(sessionID)
+    try { return summarizeHistory(entry.history, entry.state) } finally { entry.users-- }
+  }
+
+  async historyEntry(sessionID: string, snapshotID: string): Promise<DiagramHistoryEntry | undefined> {
+    const entry = await this.entry(sessionID)
+    try { return structuredClone(entry.history.entries.find(item => item.id === snapshotID)) } finally { entry.users-- }
   }
 
   /** Capture active input at control admission, before deferred collection. */
@@ -255,6 +279,8 @@ export class DiagramEngine {
     entry.state.sources = evidence.map(({ id, label }) => ({ id, label }))
     entry.state.stale = stale
     entry.state.phase = entry.state.mode === "off" ? "paused" : entry.pending ? "queued" : analysis.relevant ? "ready" : "watching"
+    entry.history = rememberHistory(entry.history, { views, sources: entry.state.sources,
+      granularity: entry.state.granularity, updatedAt: entry.state.updatedAt })
     const accepted: AcceptedDiagram = { key, granularity: entry.state.granularity, fingerprints: evidenceFingerprints(evidence),
       analysis: { relevant: analysis.relevant, reason: analysis.reason, views }, sources: entry.state.sources, updatedAt: entry.state.updatedAt }
     entry.memo.entries = [...entry.memo.entries.filter((item) => item.granularity !== accepted.granularity), accepted]

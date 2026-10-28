@@ -15,7 +15,7 @@ not call a model; you choose who authors the diagram.
 | --- | --- | --- |
 | [Standalone MCP](#standalone-mcp-no-opencode-required) | Other AI clients and MCP-enabled services | Client-authored diagrams, JSON tools/resources, SVG/PNG output; local stdio, memory-only storage |
 | [Node API](#node-api-for-applications) | Custom services and visualizations | Shared schemas, citation validation, layout, SVG/PNG functions; your app owns inputs and storage |
-| [OpenCode plugin](#opencode-plugin-setup) | Keeping architecture beside development work | Native interactive TUI, session evidence, optional automatic authoring, durable cached diagrams |
+| [OpenCode plugin](#opencode-plugin-setup) | Keeping architecture beside development work | Native Desktop SVG panel and interactive TUI, session evidence, optional automatic authoring, durable cached diagrams |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
@@ -44,7 +44,7 @@ source-linked view uses the shared production exporter—not a terminal screensh
   call a model. The OpenCode plugin persists accepted diagrams and tracking
   preferences; the standalone MCP store lasts only for its process.
 - **Updates need not start over in OpenCode.** Reuse unchanged views and node content. Native
-  authoring supports compact drafts and one bounded validation repair; failed
+  authoring edits a private canonical draft with bounded in-place validation repair; failed
   updates leave the last valid diagram visible.
 - **It feels like OpenCode.** Native sidebar, keyboard navigation, resizable
   panel, fullscreen, host-theme colors, and one-click Classic sidebar restoration.
@@ -120,16 +120,22 @@ Use a TypeScript-aware runtime such as `node --import tsx your-script.ts`.
 
 ## OpenCode plugin setup
 
-Requires **OpenCode 2.x (`>=2.0.27 <3`)** in addition to the checkout above.
-Current full verification used **OpenCode 2.0.27**. The range admits later 2.x
-releases; it does not claim every future release has already been tested. The
-host supplies the plugin/Effect peer runtime; local development pins match
-2.0.27. See [setup](docs/setup.md) for dependency compatibility and troubleshooting.
+Targets **OpenCode 2.2.0** (`>=2.2.0 <3`) in addition to the checkout above.
+SDK dependencies align at **2.2.0**, OpenTUI peers at **0.7.0**, and Effect at
+**4.0.1**. Native authoring and SVG RPC have isolated real-host checks; Desktop
+panel loading and rendering were also observed on 2.2.0. This is not certification
+of every admitted host. See [setup](docs/setup.md) for compatibility.
 
-### 1. Load it in your project
+### 1. Build and load the plugin
 
-Add this entry to the **target project's** `opencode.json` or `opencode.jsonc`.
-Merge it into existing `plugins`; do not replace your other settings.
+In the checkout, run `npm run build` to produce `dist/gui-experimental.cjs`.
+For local GUI development, `npm run dev:gui` rebuilds on changes; Desktop hot
+reloads the GUI plugin in every open window. The GUI API is experimental.
+
+**Desktop:** GUI discovery uses Desktop's own background server and the **global**
+`opencode.json` or `opencode.jsonc` (normally under `~/.config/opencode/`), not just
+a target project's config. Merge this entry into existing `plugins`; preserve
+all unrelated settings:
 
 ```json
 {
@@ -141,11 +147,21 @@ Merge it into existing `plugins`; do not replace your other settings.
 }
 ```
 
-Open OpenCode in that target project. For an already running instance, reload
-configuration with `opencode reload` from the target project and reopen the TUI
-if its plugin entry has not appeared. The native **Classic sidebar** is selected
-by default, with diagram tabs still available. Click a diagram tab or run
-`/open-diagram` to open the diagram view.
+This single package contains server, TUI, and GUI parts (plugin ID
+`open-diagram-server`); do not register separate entrypoints. Global registration
+can also activate the server plugin in other projects, so keep the global backend
+**manual**. Opt into automatic authoring only through an explicit target-project
+override of this package's options, preserving other plugins and settings.
+
+The **selected session's server** must also load the plugin. For a separate or
+remote server, configure/install the checkout there; Desktop discovery does not
+auto-install it remotely. **TUI-only:** the same entry can stay in the target
+project's `opencode.json(c)` without global GUI discovery.
+
+Use `/reload` for configuration changes, not an arbitrary service restart. In
+Desktop, select a session and choose **+ → Diagram** or **Open Diagram** in the
+command palette (`open-diagram-server.open-diagram`). In the TUI, click a diagram
+tab or run `/open-diagram`; **Classic sidebar** remains the default.
 
 ### 2. Choose the model that draws your diagrams
 
@@ -160,7 +176,8 @@ by default, with diagram tabs still available. Click a diagram tab or run
 For automatic diagrams, connect the provider in OpenCode using `/connect`, then
 inspect the available catalog with `opencode models` from the target project.
 Use real IDs from that catalog—not a guessed model name. For **GPT-6 Luna**
-through OpenAI (`openai/gpt-6-luna`), replace the manual entry's options with:
+through OpenAI (`openai/gpt-6-luna`), set the same package's **project-scoped**
+options to the following, keeping the global discovery entry manual:
 
 ```json
 {
@@ -182,7 +199,8 @@ variant, add `"variant": "YOUR_VARIANT_ID"` separately—do not append it to `mo
 
 #### Local or remote OpenAI-compatible endpoint
 
-Already serving a model? Replace the same plugin entry's `options` with:
+Already serving a model? Set the same package's **project-scoped** `options`
+to the following, keeping the global discovery entry manual:
 
 ```json
 {
@@ -258,6 +276,29 @@ data feeds the terminal and exports. [SVG](docs/images/cached-view-light.svg)*
 
 ## Native OpenCode controls
 
+### Desktop GUI
+
+The **Diagram** side panel is a read-only SVG viewer, not a canvas editor. Switch
+view tabs, use **Overview / Granular**, **Pause / Resume / Refresh**, zoom with
+**− / + / Fit**, and scroll to pan. **Inspect node** shows details, behavior, and
+source labels; labels are not clickable resolved file links. **Save SVG** uses
+the Desktop save dialog. Reading, rendering, inspecting, and saving accepted
+diagrams require no extra model call. This first GUI slice has no PNG action;
+TUI PNG export remains available.
+
+**Live** follows the current accepted views. **Recent** keeps older accepted view
+snapshots as separate, horizontally scrollable tabs, labelled by depth and time.
+The server retains up to **24 snapshots per session**, capped at **1 MiB**; oldest
+entries expire first. Identical content is deduplicated, failed drafts never enter
+history, and saved snapshots survive reloads with their original source labels.
+History selection does not change Live or trigger authoring; tracking controls
+still apply to Live. Overview/Granular returns to Live before changing depth.
+The TUI's current views and two-depth inference cache stay unchanged. Older caches
+seed history from whichever accepted views they still retain; already-discarded
+diagrams cannot be recovered.
+
+### TUI
+
 | Action | Control |
 | --- | --- |
 | Open diagrams | `/open-diagram` |
@@ -284,7 +325,7 @@ SSH clipboard requirements, and rendering limits.
 
 The shared core owns graph/notation schemas, validation, layout, and image
 rendering. The OpenCode adapter owns session evidence, configured generation,
-and durable state; its TUI owns presentation. The standalone MCP adapter accepts
+and durable state; its Desktop GUI and TUI own presentation. The standalone MCP adapter accepts
 client-authored diagrams and owns a bounded in-memory store, without importing
 the OpenCode runtime. The Node API exposes the core directly.
 
@@ -299,20 +340,25 @@ extra model calls or exhaustive semantic verification. Meaningful objective
 changes invalidate cache reuse even when source bytes are unchanged.
 Completed public compaction summaries retain historical project context, not
 proof of implementation. Native authoring uses an isolated managed session with
-request-local evidence, restricted permissions, and a result tool. It expands compact drafts or sparse
-updates into canonical graphs, then validates structure, references, citations,
-and budgets before anything replaces an accepted view.
+request-local evidence and restricted Code Mode primitive tools to inspect and
+edit a private canonical draft, then validate and commit it. Invalid commits
+return issues for in-place repair; only a valid result replaces accepted views.
+Their executors reject calls outside the active managed sidecar. Code Mode may
+still list or discover registered tools in other sessions; listing grants no access.
+The legacy result/repair path remains an internal compatibility fallback;
+endpoint and manual publication schemas are unchanged.
 
 <details>
 <summary><strong>See this repository's authoring and publication pipeline</strong></summary>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/authoring-dark.png">
-  <img src="docs/images/authoring-light.png" alt="Open Diagram's native authoring pipeline: public evidence records pass through selection, configured authoring, draft expansion and validation to engine publication and accepted cache; validation can request one repair, and cached views support incremental reuse." width="760">
+  <img src="docs/images/authoring-light.png" alt="Earlier result/repair authoring pipeline: public evidence passes through selection, authoring and validation to publication and accepted cache." width="760">
 </picture>
 
-*Hand-authored from this repository's sources, rendered by the production
-exporter. Arrows show data and feedback, not a complete call graph.
+*Historical result/repair pipeline, rendered by the production exporter; current
+native authoring uses private draft primitives instead. Arrows show data and
+feedback, not a complete call graph.
 [SVG](docs/images/authoring-light.svg) · [Source map](docs/images/README.md)*
 
 </details>
@@ -330,6 +376,8 @@ exporter. Arrows show data and feedback, not a complete call graph.
 
 ```sh
 npm ci
+npm run build        # Build the Desktop GUI CJS entrypoint
+npm run dev:gui      # Optional GUI watch/rebuild loop
 npm run verify       # TypeScript + unit, MCP, native TUI, and isolated runtime checks
 node --import tsx --test tests/standalone.test.ts  # Standalone-only checks
 npm run docs:images  # Regenerate this README's light/dark SVG and PNG images
@@ -337,8 +385,9 @@ npm run docs:check   # Check SVG freshness and PNG signatures/dimensions
 npm pack --dry-run   # Inspect the package file list; does not publish
 ```
 
-Native runtime tests require OpenCode **2.0.27–2.0.x** and `python3` on PATH;
-the existing harness rejects 2.1.x even though the package's host range is broader.
+Native runtime checks target **OpenCode >=2.2.0 <3** and need `python3`.
+Run `node --import tsx scripts/test-diagram-primitives.mjs` for the isolated
+Code Mode composition, commit, step-budget, and SVG RPC exercise.
 Standalone tests do not need OpenCode. The native renderer test
 needs Node **26.4+** with `--experimental-ffi`; it skips on older Node versions.
 Tests use isolated fixture services, never paid models or the shared service.
@@ -365,8 +414,20 @@ excerpts are transient. Open Diagram does not read another plugin's private stat
 or change host model routing or theme settings.
 
 Cold generation depends on the configured model and can take tens of seconds or
-time out. Native generation and at most one repair share `timeoutMs` (default
-90 seconds); a repair does not restart the clock. There is no provider fallback.
+time out. Native draft authoring defaults to **8 model steps** (`authorSteps`,
+configurable from 1 to 32), **256 draft mutations**, and a **128 KiB draft**.
+The author sees a remaining-step countdown and a final-step commit instruction.
+All steps and repairs share the original
+`timeoutMs` deadline (default 90 seconds); no step restarts the clock. Successful
+commit stops the next model dispatch, without a narration call. There is no
+provider fallback or paid default.
+Raising `authorSteps` can increase model usage; it does not extend `timeoutMs`.
+
+**Code Mode is not a network sandbox.** Managed author instructions prohibit
+network use, but OpenCode 2.2.0's native `fetch()` can make requests despite
+session deny rules. This integration deliberately uses native Code Mode with
+that capability; do not enable automatic authoring where enforceable network
+isolation is required. Draft tool ownership and publication validation remain enforced.
 
 Circuit connectivity comes from explicit pins and nets—not crossing lines.
 PCB placement/routing, CAD import adapters, simulation, ERC/DRC, manufacturing

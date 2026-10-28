@@ -12,7 +12,7 @@ For numbered install and model-selection instructions, start with
 | --- | --- | --- |
 | [Standalone MCP](standalone.md) | Local Node process; client-authored analysis and source references | JSON tools/resources, SVG/PNG; bounded memory-only records |
 | [`open-diagram/core`](standalone.md#use-the-shared-node-api) | Node-side TypeScript API; caller-supplied data | Shared schema/validation/layout/export functions; caller owns storage and transport |
-| OpenCode plugin tools/RPC | OpenCode session and collected evidence | Accepted views, tracking controls, location-scoped durable state and TUI |
+| OpenCode plugin tools/RPC | OpenCode session and collected evidence | Accepted views, tracking controls, durable state, Desktop GUI and TUI |
 
 All three use the canonical `{relevant, reason, views}` analysis format and the
 same notation validators. They do **not** share identity or concurrency tokens:
@@ -35,8 +35,11 @@ factory, while `node mcp.mjs` starts its local stdio transport.
 2. **An OpenCode model:** configure `backend: "opencode"`, `providerID`, `model`,
    and optionally `variant`. Generation uses an isolated managed author session
    through public OpenCode V2 session/tool APIs, with request-local evidence and
-   restricted permissions: only `open_diagram_result` is exposed; file, shell,
-   and other tools are denied. It does not change the conversation's model.
+   restricted tool execution: private `open_diagram_draft_*` primitives edit,
+   validate and commit a draft through native Code Mode. File, shell and unrelated
+   tool calls are denied. Code Mode's native `fetch()` is not network-isolated by
+   those rules; see the [network limitation](setup.md#b-use-a-dedicated-model-through-opencode).
+   It does not change the conversation's model.
    This can incur charges under the configured provider.
 3. **Any external or active model:** obtain a snapshot, produce the documented
    JSON, and publish it through the tools or authenticated RPC. Use
@@ -47,10 +50,12 @@ Installing the package without backend options defaults to manual mode. There is
 no automatic paid-provider fallback.
 
 Automatic adapters use short request-local evidence aliases and map validated
-citations exactly back to durable source IDs. Native generation permits one
-validation-repair request within the original timeout; it never fuzzily repairs
-citations or retries transport failures. This can mean up to two model calls per
-update. Invalid output is never published.
+citations exactly back to durable source IDs. Native generation defaults to eight
+model steps (`authorSteps`, 1–32), with in-place draft repair and a remaining-step
+countdown. All steps share the original timeout. It never guesses citations or
+retries transport failures. Only explicit validated commit publishes output.
+The older single-result/one-repair machinery remains a compatibility path, not the
+default managed-author workflow.
 
 ## Authoring protocol
 
@@ -114,6 +119,13 @@ and authoring snapshot/publication requests own evidence collection. TUI view
 changes reuse a bounded session cache; server events keep inactive cached sessions
 updated. Reconnect/plugin-reload events invalidate cached snapshots for one scoped
 read, without triggering model generation. No periodic polling is used.
+
+Desktop additionally reads `history({sessionID})`, obtains one immutable view with
+`historyGet({sessionID,snapshotID})`, and renders it with
+`renderHistory({sessionID,snapshotID,colorMode,selected?})`, always passing the
+session's server and location. History is display-only: up to 24 accepted view
+snapshots and 1 MiB per session, separate from the two-depth inference memo.
+Historical reads/rendering never collect evidence or invoke a model.
 
 Refresh is content-aware: it reuses an accepted diagram for unchanged material
 evidence, meaningful parent objective, and depth, or retries a failed changed-input

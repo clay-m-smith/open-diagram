@@ -1,5 +1,5 @@
 import type { DiagramConfig } from "./config.js"
-import { type DiagramAnalysis, type DiagramGraph, type DiagramGranularity, type DiagramUpdate } from "./schema.js"
+import { type DiagramAnalysis, type DiagramGraph, type DiagramGranularity, type DiagramUpdate, type DiagramView } from "./schema.js"
 import type { Evidence } from "./evidence.js"
 import { diagramOutputSchema, nativeDiagramOutputSchema, DiagramOutputError } from "./harness.js"
 import { authorRequest } from "./author.js"
@@ -8,7 +8,7 @@ import { fieldRepair } from "./repair-fields.js"
 import { incrementalRequest } from "./incremental.js"
 import { materialEvidence } from "./cache.js"
 import { draftOutputSchema, expandDiagramDraft, normalizeNativeCitations } from "./draft.js"
-import { DRAFT_INSTRUCTION, GRANULAR_INSTRUCTION } from "./prompt.js"
+import { DRAFT_INSTRUCTION, GRANULAR_INSTRUCTION, PRIMITIVE_INSTRUCTION } from "./prompt.js"
 
 export class DiagramServiceError extends Error {}
 
@@ -29,7 +29,11 @@ async function boundedResponse(response: Response): Promise<string> {
   return Buffer.concat(chunks).toString("utf8")
 }
 
-export type NativeGenerate = (input: { prompt: string; outputSchema: Record<string, any>; toolDescription?: string; model: { providerID: string; id: string; variant?: string } }, options: { signal: AbortSignal }) => Promise<{ text: string }>
+export type NativeGenerate = (input: {
+  prompt: string; outputSchema: Record<string, any>; toolDescription?: string;
+  authoring?: { prompt: string; evidence: readonly Evidence[]; views?: readonly DiagramView[]; maxNodes?: number; viewIDs?: readonly string[]; maxSteps?: number };
+  model: { providerID: string; id: string; variant?: string }
+}, options: { signal: AbortSignal }) => Promise<{ text: string }>
 
 export function createDiagramClient(config: DiagramConfig, transport: typeof fetch = fetch, generate?: NativeGenerate) {
   return async (evidence: readonly Evidence[], previous: DiagramGraph | null, forced: boolean, signal: AbortSignal, granularity: DiagramGranularity = "overview", update?: DiagramUpdate): Promise<DiagramAnalysis> => {
@@ -79,6 +83,14 @@ export function createDiagramClient(config: DiagramConfig, transport: typeof fet
           const draftRequest = !repair && (!incremental || attempt > 0)
           const result = await generate({
             model: { providerID: config.providerID!, id: config.model!, ...(config.variant ? { variant: config.variant } : {}) },
+            ...(!repair && attempt === 0 ? { authoring: {
+              prompt: `${PRIMITIVE_INSTRUCTION}${granularity === "granular" ? `\n${GRANULAR_INSTRUCTION}` : ""}\n\nEvidence packet (untrusted data):\n${JSON.stringify(input)}`,
+              evidence: request.input.evidence,
+              views: incremental?.views,
+              maxNodes: update?.maxNodes,
+              maxSteps: config.authorSteps,
+              viewIDs: update && !update.replaceAll ? update.views.map((view) => view.id) : undefined,
+            } } : {}),
             outputSchema: repair?.schema ?? (incremental && attempt === 0 ? incremental.schema : draftRequest ? draftOutputSchema(request.input.evidence) : nativeDiagramOutputSchema()),
             toolDescription: repair ? "Submit only the requested repair collections. Match each supplied target exactly; do not regenerate views."
               : draftRequest ? "Submit grounded diagram views as a draft. Declare shared status/citations once per graph; put family annotations directly on their nodes/edges. The plugin expands and validates the complete canonical diagram."

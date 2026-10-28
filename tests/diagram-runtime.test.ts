@@ -2,6 +2,14 @@ import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import test from "node:test"
 
+test("native Code Mode composes private draft primitives and exposes accepted SVG", { timeout: 40000 }, () => {
+  const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env
+  const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/test-diagram-primitives.mjs"], { env, encoding: "utf8", timeout: 35000 })
+  assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`)
+  assert.match(result.stdout, /real Code Mode composes primitive edits, repairs validation, commits atomically and stops/)
+  assert.match(result.stdout, /accepted native network boundary; four-step ceiling; accepted revision exposed as SVG without model calls/)
+})
+
 test("native plugin reload drains pending admission without blocking folder RPC or replacement generation", { timeout: 30000 }, () => {
   const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env
   const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/test-diagram-reload.mjs"], { env, encoding: "utf8", timeout: 25000 })
@@ -15,9 +23,9 @@ test("native cancellation stops provider work before queued diagrams proceed", {
   const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/test-diagram-cancellation.mjs"], { env, encoding: "utf8", timeout: 25000 })
   assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`)
   assert.match(result.stdout, /native timeout closes provider socket and releases queued successor/)
-  assert.match(result.stdout, /native repair shares deadline and reports its stage/)
+  assert.match(result.stdout, /native primitive repair shares initial-generation deadline/)
   assert.match(result.stdout, /native citation-only repair publishes fully validated diagram/)
-  assert.match(result.stdout, /native result submissions persist as completed tools without extra provider calls/)
+  assert.match(result.stdout, /native primitive executions persist as completed tools without extra provider calls/)
   assert.match(result.stdout, /native Pause cancels active provider work without a spurious timeout/)
 })
 
@@ -42,7 +50,7 @@ test("live diagrams follow actual OpenCode V2 prompt and native edit hooks throu
   assert.match(result.stdout, /native durable fingerprints make unchanged Refresh and cached depth switches zero-model operations/)
   assert.match(result.stdout, /main-agent chat and progress cause zero diagram-model calls/)
   assert.match(result.stdout, /native source edit authors only dependent view with reduced evidence and preserves unrelated view/)
-  assert.match(result.stdout, /native incremental citation-key typo publishes current citations without a repair call/)
+  assert.match(result.stdout, /native incremental primitive citation repair publishes current citations on continuation/)
   assert.match(result.stdout, /auto-enabled main-agent snapshot\/publication adds zero secondary model calls/)
   assert.match(result.stdout, /actual native TUI retains cached layers beside failed-update warning/)
   assert.match(result.stdout, /native failed update preserves ready cached views; explicit changed-input retry recovers/)

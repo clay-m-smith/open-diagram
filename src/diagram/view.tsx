@@ -93,7 +93,12 @@ export function CompactDiagram(props: {
         const changedGraph = previous?.content !== request.content
         const selectionChanged = previous?.options.selected !== request.options.selected
         if (changedGraph) { resetOrigin = true; followSelection = false }
-        else if (selectionChanged) followSelection = !!request.options.selected
+        else if (selectionChanged) {
+          // A newer explicit selection wins over an origin reset still waiting
+          // for its frame. Otherwise that reset consumes and drops this reveal.
+          resetOrigin = false
+          followSelection = !!request.options.selected
+        }
         // Passive cache/status updates must not pull the viewport back to an
         // old selection. Explicit selection and its resize/source reflow may.
         const reflow = previous?.options.columns !== request.options.columns
