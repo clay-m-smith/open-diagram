@@ -343,6 +343,9 @@ proof of implementation. Native authoring uses an isolated managed session with
 request-local evidence and restricted Code Mode primitive tools to inspect and
 edit a private canonical draft, then validate and commit it. Invalid commits
 return issues for in-place repair; only a valid result replaces accepted views.
+Tools return structured objects for composition; notation schemas are fetched on
+demand. A prose-only completion gets a corrective turn within the existing budget,
+never an automatic commit.
 Their executors reject calls outside the active managed sidecar. Code Mode may
 still list or discover registered tools in other sessions; listing grants no access.
 The legacy result/repair path remains an internal compatibility fallback;

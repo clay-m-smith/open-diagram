@@ -163,9 +163,16 @@ tools through native **Code Mode** rather than returning one full tuple result:
 - `open_diagram_draft_view`: set view metadata, explicit new-node defaults, or reason.
 - `open_diagram_draft_node` / `open_diagram_draft_edge`: add or update graph records.
 - `open_diagram_draft_notation`: edit typed notation fields or records.
+- `open_diagram_draft_schema`: list one family's fields or fetch one field/record
+  schema on demand, without dumping every notation schema into the catalog.
 - `open_diagram_draft_remove`: remove views, nodes, edges, or notation records.
 - `open_diagram_draft_validate`: check without publishing or locking the draft.
 - `open_diagram_draft_commit`: validate and submit the complete canonical result.
+
+These tools return **objects**, not JSON strings. Check `result.ok`; do not use
+object truthiness as a failure check or parse the result again. A successful edit
+is not publication: continue composing edits, then call commit and check
+`committed: true`. Validation results stay compact rather than echoing the graph.
 
 Only the active managed sidecar can execute these tools; their registered names
 may still be discoverable in other sessions, where calls are rejected. File,
@@ -187,6 +194,9 @@ a follow-up narration call; later edits/commits are rejected. The managed sessio
 may end as `interrupted` because continuation was stopped. Failed or uncommitted
 drafts never replace the last accepted diagram. GUI read/render/save uses accepted
 output and adds no model call.
+If the author ends with prose without committing, the adapter gives a corrective
+turn while steps remain. This retains the same draft, step count, and deadline;
+it does not automatically commit even a valid draft or retry a transport failure.
 
 **Legacy compatibility fallback only:** the internal `open_diagram_result` and
 bounded targeted/full-result repair machinery remain available for older result

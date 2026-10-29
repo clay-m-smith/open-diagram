@@ -7,12 +7,17 @@ import { DiagramOutputError, parseDiagramOutput } from "./protocol.js"
 
 const index = z.number().int().min(0).max(95)
 const defaults = GraphSchema.shape.nodes.element.pick({ status: true, evidence: true }).strict()
+const family = z.enum(NotationSchema.options.map(variant => variant.shape.family.value))
+const notationFields = new Map<string, Map<string, z.ZodType>>()
 const notationEdits: z.ZodType[] = []
 const notationRemovals: z.ZodType[] = []
 const notationLimits = new Map<string, number>()
 for (const variant of NotationSchema.options) {
+  const fields = new Map<string, z.ZodType>()
+  notationFields.set(variant.shape.family.value, fields)
   for (const [field, schema] of Object.entries(variant.shape)) {
     if (field === "version" || field === "family") continue
+    fields.set(field, schema)
     const base = { view: diagramID, family: variant.shape.family, field: z.literal(field) }
     notationEdits.push(z.object({ ...base, value: schema }).strict())
     if (schema instanceof z.ZodArray) {
@@ -39,25 +44,64 @@ const schemas = {
     ...notationRemovals,
   ]),
   validate: z.object({}).strict(),
+  schema: z.object({ family, field: z.string().optional(), record: z.boolean().optional() }).strict(),
+}
+// Discovery stays small; execution still uses the exact family-specific unions above.
+const publishedInputs = {
+  ...schemas,
+  notation: z.object({ view: diagramID, family, field: z.string(), index: index.optional(), value: z.unknown() }).strict(),
+  remove: z.union([
+    ...schemas.remove.options.slice(0, 4),
+    z.object({ target: z.literal("record"), view: diagramID, family, field: z.string(), index }).strict(),
+  ]),
+}
+const success = z.object({ ok: z.literal(true) }).strict()
+const failed = z.object({ ok: z.literal(false), issues: z.array(z.object({ path: z.string(), message: z.string() }).strict()) }).strict()
+const editOutput = z.union([success, failed])
+const inspectOutput = z.object({
+  ok: z.literal(true), relevant: z.boolean(), reason: z.string(),
+  views: z.array(z.object({ id: diagramID, label: z.string().optional(), graph: z.object({
+    title: z.string().optional(), summary: z.string().optional(),
+    nodes: z.array(GraphSchema.shape.nodes.element.partial().required({ id: true })),
+    edges: z.array(GraphSchema.shape.edges.element.partial()), notation: z.unknown().optional(),
+  }).strict() }).strict()),
+  defaults: z.record(z.string(), defaults),
+  evidence: z.array(z.object({ id: diagramID, label: z.string() }).strict()),
+  remainingOperations: z.number().int().nonnegative(),
+}).strict()
+const outputs = {
+  inspect: z.union([inspectOutput, failed]),
+  view: editOutput, node: editOutput, edge: editOutput, notation: editOutput, remove: editOutput, validate: editOutput,
+  schema: z.union([
+    z.object({ ok: z.literal(true), family, fields: z.array(z.string()) }).strict(),
+    z.object({ ok: z.literal(true), family, field: z.string(), schema: z.record(z.string(), z.unknown()) }).strict(),
+    failed,
+  ]),
 }
 const descriptions: Record<keyof typeof schemas, string> = {
   inspect: "Read a deep copy of canonical draft, explicit node defaults, evidence aliases and remaining mutation budget.",
   view: "Upsert view metadata; omitted fields stay unchanged. Omit id to set only root reason (required before validation). Defaults seed only NEW nodes; never infer citations.",
   node: "Upsert named node fields by ID. Omitted fields stay unchanged; new nodes may be incomplete until validate. References may temporarily dangle.",
   edge: "Append edge when index omitted; otherwise merge fields at existing index. References may temporarily dangle.",
-  notation: "Set one family field/collection, or replace/append one complete record by index (length appends). Family changes require removing notation first. Replacing messages collection clears activations/fragments to avoid index retargeting.",
+  notation: "Use schema lookup for the exact notation field before setting a field/collection or complete record by index (length appends). Family changes require removing notation first. Replacing messages collection clears activations/fragments to avoid index retargeting.",
   remove: "Remove view, node, edge, notation or indexed notation record. Node removal leaves references for repair. Edge removal clears notation to prevent index retargeting. Message removal clears activations/fragments.",
   validate: "Strict canonical graph, notation, citations, reason, allowed views and node budget check. No persistence or locking; failed validation leaves draft editable.",
+  schema: "List editable fields for one notation family, or fetch one exact field schema. Set record:true for an array element schema; scalar fields reject record lookup. Read-only; no mutation budget used.",
 }
-export const AUTHOR_DRAFT_TOOLS: Record<keyof typeof schemas, { description: string; input: Record<string, any> }> =
-  Object.fromEntries(Object.entries(schemas).map(([name, schema]) => [name, {
-    description: descriptions[name as keyof typeof schemas], input: z.toJSONSchema(schema),
-  }])) as Record<keyof typeof schemas, { description: string; input: Record<string, any> }>
+type ToolContract = { description: string; input: Record<string, any>; output: Record<string, any> }
+export const AUTHOR_DRAFT_TOOLS = Object.fromEntries(Object.entries(publishedInputs).map(([name, schema]) => {
+  const operation = name as keyof typeof schemas
+  return [name, {
+    description: `${descriptions[operation]} Check result.ok; successful edit is NOT commit.`,
+    input: z.toJSONSchema(schema), output: z.toJSONSchema(outputs[operation]),
+  }]
+})) as Record<keyof typeof schemas, ToolContract>
 
 const BYTE_LIMIT = 128 * 1024
 const OP_LIMIT = 256
 const clone = <T>(value: T): T => structuredClone(value)
 type Issue = { path: string; message: string }
+type DraftResult = { ok: true; [key: string]: unknown } | { ok: false; issues: Issue[] }
 type Validation = { ok: true; value: DiagramViewAnalysis } | { ok: false; issues: Issue[] }
 const failure = (message: string): { ok: false; issues: Issue[] } => ({ ok: false, issues: [{ path: "root", message }] })
 function fail(message: string): never { throw new Error(message) }
@@ -115,7 +159,7 @@ export function createAuthorDraft(input: { evidence: readonly Evidence[]; views?
   }
   bounds(state)
   function inspect() {
-    return clone({ relevant: state.views.length > 0, ...state, evidence, remainingOperations: OP_LIMIT - operations })
+    return clone({ ok: true as const, relevant: state.views.length > 0, ...state, evidence, remainingOperations: OP_LIMIT - operations })
   }
   function validate(): Validation {
     if (!state.reason.trim()) return failure("Nonempty reason required; set view.reason")
@@ -130,16 +174,27 @@ export function createAuthorDraft(input: { evidence: readonly Evidence[]; views?
       return failure("Invalid canonical draft")
     }
   }
-  function execute(name: string, raw: unknown): unknown {
+  function execute(name: string, raw: unknown): DraftResult {
     if (!Object.hasOwn(schemas, name)) return failure("Unknown draft operation")
     try {
       boundedJSON(raw)
       const parsed = schemas[name as keyof typeof schemas].safeParse(raw)
       if (!parsed.success) return failure("Invalid operation fields or values; consult operation schema")
       if (name === "inspect") return inspect()
-      if (name === "validate") return validate()
-      if (operations >= OP_LIMIT) return failure("Draft mutation limit exceeded")
+      if (name === "validate") {
+        const result = validate()
+        return result.ok ? { ok: true } : result
+      }
       const arg: any = parsed.data
+      if (name === "schema") {
+        const fields = notationFields.get(arg.family)!
+        if (arg.field === undefined) return { ok: true, family: arg.family, fields: [...fields.keys()] }
+        const fieldSchema = fields.get(arg.field)
+        if (!fieldSchema || (arg.record && !(fieldSchema instanceof z.ZodArray))) return failure("Unknown notation field or non-record field")
+        return { ok: true, family: arg.family, field: arg.field,
+          schema: z.toJSONSchema(arg.record && fieldSchema instanceof z.ZodArray ? fieldSchema.element : fieldSchema) }
+      }
+      if (operations >= OP_LIMIT) return failure("Draft mutation limit exceeded")
       const next = clone(state)
       if (name === "view") {
         if (arg.reason !== undefined) next.reason = arg.reason

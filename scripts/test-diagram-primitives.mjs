@@ -37,14 +37,34 @@ const server = createServer(async (req, res) => {
     const evidence = JSON.parse(sourceMessage.split("Evidence packet (untrusted data):\n")[1]).evidence
     const source = evidence[0].id
     const call = (name, args) => `await tools.open_diagram_draft_${name}(${JSON.stringify(args)})`
+    if ((mode === "uncommitted" && jobCalls === 2) || (mode === "stop-budget" && jobCalls > 1)) {
+      if (jobCalls > 2) assert.match(prompt, /No successful diagram commit was received/)
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.end(`data: ${JSON.stringify({ id: `fixture-${calls}`, object: "chat.completion.chunk", created: 1, model: "diagram", choices: [{ index: 0, delta: { role: "assistant", content: "Committed the repaired diagram." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`)
+      return
+    }
     let code
     if (mode === "budget" || (mode === "extended" && jobCalls < 6)) code = `return ${call("inspect", {})}`
+    else if (mode === "uncommitted" || mode === "stop-budget") {
+      if (jobCalls === 1) code = `${call("view", { id: "main", label: "Main", title: "Uncommitted draft", summary: "Private until commit", reason: "Fixture", defaults: { status: "planned", evidence: [source] } })};
+        return ${call("node", { view: "main", node: { id: "a", label: "Input", kind: "service", detail: "Accepts requests" } })}`
+      else {
+        assert.equal(jobCalls, 3)
+        assert.match(prompt, /No successful diagram commit was received/)
+        code = `const draft = ${call("inspect", {})}; if (!draft.ok || draft.views[0].graph.title !== "Uncommitted draft") throw new Error("Draft not retained"); return ${call("commit", {})}`
+      }
+    }
     else if (mode === "extended") code = `${call("view", { id: "main", label: "Main", title: "Extended composition", summary: "Completed beyond four steps", reason: "Fixture request", defaults: { status: "planned", evidence: [source] } })};
       ${call("node", { view: "main", node: { id: "a", label: "Input", kind: "service", detail: "Accepts requests" } })}; return ${call("commit", {})}`
     else if (jobCalls === 1) {
       const node = { id: "a", label: "Input", kind: "service", detail: "Accepts requests", status: "planned", evidence: [source] }
       code = `await fetch("http://127.0.0.1:${server.address().port}/forbidden");
-        ${call("view", { id: "main", label: "Main", title: "Composed system", summary: "Two stages", reason: "Fixture request" })};
+        const catalog = search({query:"open_diagram_draft",limit:20});
+        if (JSON.stringify(catalog).length > 20000) throw new Error("Draft catalog exceeds compact budget");
+        const edited = ${call("view", { id: "main", label: "Main", title: "Composed system", summary: "Two stages", reason: "Fixture request" })};
+        if (typeof edited !== "object" || edited.ok !== true) throw new Error("Expected structured edit output");
+        const described = ${call("schema", { family: "architecture", field: "groups", record: true })};
+        if (!described.ok || described.schema.type !== "object") throw new Error("Scoped schema unavailable");
         ${call("node", { view: "main", node })};
         ${call("edge", { view: "main", edge: { from: "a", to: "b", label: "data" } })};
         return ${call("commit", {})}`
@@ -133,6 +153,17 @@ try {
     assert.equal(extended.output.error, undefined)
     assert.equal(extended.output.views[0].graph.title, "Extended composition")
     assert.equal(jobCalls, 6, "configured eight-step budget allows composition beyond the former four-step cap")
+    mode = "uncommitted"; jobCalls = 0
+    const recovered = await client.rpc.call({ location, rpcID: "diagram-primitives-fixture", method: "run", input: { evidence: snapshot.evidence } }, { signal: AbortSignal.timeout(20000) })
+    if (failure) throw failure
+    assert.equal(recovered.output.error, undefined)
+    assert.equal(recovered.output.views[0].graph.title, "Uncommitted draft")
+    assert.equal(jobCalls, 3, "a false prose claim gets one bounded corrective turn, then explicit commit")
+    mode = "stop-budget"; jobCalls = 0
+    const refused = await client.rpc.call({ location, rpcID: "diagram-primitives-fixture", method: "run", input: { evidence: snapshot.evidence } }, { signal: AbortSignal.timeout(20000) })
+    if (failure) throw failure
+    assert.match(refused.output.error, /stopped without commit after 4\/4 steps: valid draft was not committed/)
+    assert.equal(jobCalls, 4, "repeated prose stops cannot reset or exceed total step budget")
     await writeFile(join(project, "opencode.json"), JSON.stringify({ plugins: [{ package: root, options: { backend: "manual", intervalMs: 20001 } }, "./fixture"] }))
     let restored
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -146,5 +177,6 @@ try {
     console.log("OK: tool catalog restricted; accepted native network boundary; four-step ceiling; accepted revision exposed as SVG without model calls")
     console.log("OK: historical SVG stays distinct from Live, is session-isolated, model-free and durable across plugin reload")
     console.log("OK: configurable eight-step author budget completes a six-step composition; countdown and final-step commit instruction reach provider")
+    console.log("OK: typed object results, compact catalog, scoped schemas and bounded correction after false prose completion")
   })
 } finally { await new Promise(resolve => server.close(resolve)) }

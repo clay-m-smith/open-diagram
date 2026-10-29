@@ -3,18 +3,21 @@ import type { Plugin } from "@opencode/plugin"
 import { DiagramServiceError, type NativeGenerate } from "./client.js"
 import { digest } from "./evidence.js"
 import { AUTHOR_DRAFT_TOOLS, createAuthorDraft } from "./author-draft.js"
+import { z } from "zod"
 
 const toolName = "open_diagram_result"
 const commitName = "open_diagram_draft_commit"
 const primitiveNames = new Set([...Object.keys(AUTHOR_DRAFT_TOOLS).map((name) => `open_diagram_draft_${name}`), commitName])
 export const NATIVE_AUTHOR_STEPS = 8
+const CommitOutputSchema = z.object({ ok: z.boolean(), committed: z.boolean().optional(),
+  issues: z.array(z.object({ path: z.string(), message: z.string() })).optional() }).strict()
 
 /** Stock V2 tool-capable session. One managed session per location, never the user's chat. */
 export async function registerNativeAuthor(ctx: Plugin.Context) {
   const storageKey = `diagram/native-author/v1/${digest(JSON.stringify([ctx.location.directory, ctx.location.project.id, ctx.location.workspaceID ?? null]))}`
   const saved = await ctx.storage.get(storageKey)
   let sessionID = typeof saved === "string" ? saved : undefined
-  let job: { input: Parameters<NativeGenerate>[0]; signal: AbortSignal; token: string; prompted: boolean; calls: number; limit: number; value?: unknown; received: boolean; failed?: boolean; draft?: ReturnType<typeof createAuthorDraft>; stop?: () => Promise<void> | undefined } | undefined
+  let job: { input: Parameters<NativeGenerate>[0]; signal: AbortSignal; token: string; admission: string; prompted: boolean; calls: number; limit: number; value?: unknown; received: boolean; failed?: boolean; draft?: ReturnType<typeof createAuthorDraft>; stop?: () => Promise<void> | undefined } | undefined
   const owns = (id: string) => id === sessionID
   await ctx.tool.transform((editor) => {
     if (editor.get(toolName)) throw new Error("Diagram result tool name is already registered")
@@ -30,35 +33,37 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
     for (const [operation, definition] of Object.entries(AUTHOR_DRAFT_TOOLS)) {
       const name = `open_diagram_draft_${operation}`
       if (editor.get(name)) throw new Error("Diagram draft tool name is already registered")
-      editor.add({ name, description: definition.description, input: definition.input,
+      editor.add({ name, description: definition.description, input: definition.input, output: definition.output,
         options: { codemode: true, pinned: operation !== "notation" && operation !== "remove", permission: name },
         async execute(value, tool) {
           if (!owns(tool.sessionID) || !job?.draft || job.received) throw new Error("No active diagram draft")
           job.signal.throwIfAborted()
           tool.signal.throwIfAborted()
-          return { content: JSON.stringify(job.draft.execute(operation, value)) }
+          const result = job.draft.execute(operation, value)
+          return { output: result, content: JSON.stringify(result) }
         },
       })
     }
     if (editor.get(commitName)) throw new Error("Diagram draft commit tool name is already registered")
     editor.add({ name: commitName, description: "Validate and commit the private diagram draft. On validation failure returns issues and leaves the draft editable. On success stop: edits and further commits are rejected.",
       input: { type: "object", properties: {}, additionalProperties: false },
+      output: CommitOutputSchema,
       options: { codemode: true, pinned: true, permission: commitName },
       async execute(_value, tool) {
         if (!owns(tool.sessionID) || !job?.draft || job.received) throw new Error("No active diagram draft")
         job.signal.throwIfAborted()
         tool.signal.throwIfAborted()
         const result = job.draft.validate()
-        if (!result.ok) return { content: JSON.stringify(result) }
+        if (!result.ok) return { output: result, content: JSON.stringify(result) }
         job.value = result.value
         job.received = true
-        return { content: JSON.stringify({ ok: true, committed: true }) }
+        return { output: { ok: true, committed: true }, content: JSON.stringify({ ok: true, committed: true }) }
       },
     })
   })
   await ctx.session.hook("prompt", (event) => {
     if (!owns(event.sessionID)) return
-    if (!job || job.prompted || event.metadata?.openDiagram !== job.token) throw new Error("Managed diagram session does not accept external prompts")
+    if (!job || job.prompted || event.metadata?.openDiagram !== job.admission) throw new Error("Managed diagram session does not accept external prompts")
     job.signal.throwIfAborted()
     job.prompted = true
   })
@@ -87,7 +92,7 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
       if (!execute) throw new Error("Native Code Mode unavailable for diagram author")
       event.tools = { execute }
       event.system.push({ type: "text", text: "You are the managed diagram author. Use only the private draft tools through native Code Mode. Follow the request's grounding policy. Validate and commit once; do not return a whole diagram as prose. No external tools or network access are authorized." })
-      event.system.push({ type: "text", text: `Diagram author step ${job.calls} of ${job.limit}. ${job.limit - job.calls} further model steps remain after this response. The original request deadline still applies. The evidence packet already includes baseline views; inspect only when you need additional draft state. Compose known metadata, node, edge and notation edits in a single execute call and attempt open_diagram_draft_commit in that call when ready. Set a short reason before commit. Tool results are JSON text; parse them when inspecting values. ${job.calls === job.limit ? "FINAL STEP: make the remaining bounded edits and attempt commit now. Do not spend this step only discovering tools, inspecting, or validating without commit." : "Reserve time to fix validation issues and commit; successful edits alone do not publish."}` })
+      event.system.push({ type: "text", text: `Diagram author step ${job.calls} of ${job.limit}. ${job.limit - job.calls} further model steps remain after this response. The original request deadline still applies. The evidence packet already includes baseline views; inspect only when you need additional draft state. Compose known metadata, node, edge and notation edits in a single execute call and attempt open_diagram_draft_commit in that call when ready. Set a short reason before commit. Tools return objects: check result.ok, not object truthiness; do not JSON.parse tool results. After an edit, use if (!result.ok) return result; then continue edits and commit. Only commit returning {ok:true,committed:true} finishes this request. Use open_diagram_draft_schema for just the notation family/field you need, not a broad schema dump. ${job.calls === job.limit ? "FINAL STEP: make the remaining bounded edits and attempt commit now. Do not spend this step only discovering tools, inspecting, or validating without commit." : "Reserve time to fix validation issues and commit; successful edits alone do not publish."}` })
       // Hooks change outgoing context only. Locate this request's unique inbox
       // marker and retain only its tool turns; old managed jobs never leak in.
       const marker = job.token
@@ -126,7 +131,7 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
     if (job) throw new Error("Diagram author is already active")
     const limit = input.authoring?.maxSteps ?? NATIVE_AUTHOR_STEPS
     if (!Number.isInteger(limit) || limit < 1 || limit > 32) throw new DiagramServiceError("Invalid diagram author step budget")
-    const active = { input, signal, token: randomUUID(), prompted: false, calls: 0, received: false, failed: false, value: undefined as unknown,
+    const active = { input, signal, token: randomUUID(), admission: "", prompted: false, calls: 0, received: false, failed: false, value: undefined as unknown,
       limit,
       draft: input.authoring ? createAuthorDraft(input.authoring) : undefined,
       stop: undefined as (() => Promise<void> | undefined) | undefined }
@@ -183,12 +188,34 @@ export async function registerNativeAuthor(ctx: Plugin.Context) {
         interrupted = undefined
       }
       if (signal.aborted) { stop(); signal.throwIfAborted() }
-      admitted = true
-      await ctx.session.prompt({ sessionID, text: `Prepare the requested diagram. Request ID: ${active.token}`, metadata: { openDiagram: active.token } }, { signal })
-      signal.throwIfAborted()
-      await ctx.session.wait({ sessionID }, { signal })
-      signal.throwIfAborted()
-      if (active.failed || !active.calls) throw new Error("Diagram author request failed")
+      let text = `Prepare the requested diagram. Request ID: ${active.token}`
+      for (;;) {
+        // A normal prose stop is not a commit. A bounded corrective admission
+        // keeps the same draft, context boundary, step count and original signal.
+        const before = active.calls
+        active.admission = randomUUID()
+        active.prompted = false
+        admitted = true
+        await ctx.session.prompt({ sessionID, text, metadata: { openDiagram: active.admission } }, { signal })
+        signal.throwIfAborted()
+        await ctx.session.wait({ sessionID }, { signal })
+        signal.throwIfAborted()
+        if (active.failed || active.calls === before) throw new Error("Diagram author request failed")
+        if (!active.draft || active.received || active.calls >= active.limit) break
+        // Only recover a normal stop. A direct user interruption of the managed
+        // session need not abort the parent signal; never resume it implicitly.
+        const history = await ctx.session.context({ sessionID }, { signal })
+        const admission = history.findLastIndex(message => message.type === "user" && message.metadata?.openDiagram === active.admission)
+        const ended = admission < 0 ? undefined : history.slice(admission + 1).findLast(message => message.type === "idle")
+        if (ended?.type !== "idle" || ended.outcome !== "succeeded") {
+          throw new DiagramServiceError("Diagram author stopped before commit; no automatic resume")
+        }
+        const validation = active.draft.validate()
+        const feedback = validation.ok ? "The draft is valid. Call open_diagram_draft_commit now."
+          : `Fix these draft issues, then call open_diagram_draft_commit: ${JSON.stringify(validation.issues.slice(0, 4))}`
+        // No evidence or model-authored prose is persisted in this correction.
+        text = `No successful diagram commit was received. Your previous final answer did not publish anything. ${feedback} ${active.limit - active.calls} model steps remain within the original deadline. Do not end with prose before the commit tool confirms committed:true.`
+      }
       if (active.draft && !active.received) {
         const validation = active.draft.validate()
         const detail = validation.ok ? "valid draft was not committed" : validation.issues[0]?.message ?? "draft incomplete"

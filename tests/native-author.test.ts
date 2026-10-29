@@ -110,3 +110,73 @@ test("native admission cancellation drains its finalizer before releasing genera
   assert.ok(interrupts >= 2, "verified managed session is drained; no user session is touched")
   await assert.rejects(native.generate(input, { signal: AbortSignal.abort() }), /abort/i)
 })
+
+test("corrective admission retains the original abort boundary and rejects replayed admission tokens", async () => {
+  const hooks = new Map<string, (event: any) => void | Promise<void>>()
+  const prompts: any[] = []
+  let start!: () => void
+  const started = new Promise<void>(resolve => { start = resolve })
+  let finalized = false
+  const ctx = {
+    location: { directory: "/fixture", project: { id: "project" } },
+    storage: { get: async () => undefined, set: async () => {} },
+    tool: { transform: async () => {}, hook: async () => {} },
+    session: {
+      hook: async (name: string, hook: (event: any) => void) => { hooks.set(name, hook) },
+      create: async () => ({}), interrupt: async () => {}, wait: async () => {},
+      context: async () => [{ ...prompts[0], type: "user" }, { type: "idle", outcome: "succeeded" }],
+      prompt: async (input: any, options: { signal: AbortSignal }) => {
+        prompts.push(input)
+        if (prompts.length === 2) {
+          assert.notEqual(input.metadata.openDiagram, prompts[0].metadata.openDiagram)
+          assert.throws(() => hooks.get("prompt")!(prompts[0]), /does not accept external prompts/)
+        }
+        await hooks.get("prompt")!(input)
+        if (prompts.length === 1) {
+          await hooks.get("context")!({ sessionID: input.sessionID, tools: { execute: { description: "Code Mode", input: {} } },
+            system: [], messages: [{ role: "user", content: [{ type: "text", text: input.text }] }] })
+          return
+        }
+        assert.match(input.text, /No successful diagram commit/)
+        assert.doesNotMatch(input.text, /PRIVATE_EVIDENCE/)
+        start()
+        return Effect.runPromise(Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => { finalized = true }))), { signal: options.signal })
+      },
+    },
+  } as unknown as Plugin.Context
+  const native = await registerNativeAuthor(ctx)
+  const abort = new AbortController()
+  const generation = native.generate({ model: { providerID: "fixture", id: "diagram" }, prompt: "legacy", outputSchema: {},
+    authoring: { prompt: "PRIVATE_EVIDENCE", evidence: [{ id: "e1", label: "Source", text: "private" }], maxSteps: 3 } }, { signal: abort.signal })
+  await started
+  const rejected = assert.rejects(generation)
+  abort.abort()
+  await rejected
+  assert.equal(finalized, true)
+  assert.equal(prompts.length, 2)
+})
+
+for (const outcome of ["failed", "interrupted"]) test(`managed ${outcome} stop never admits a corrective prompt`, async () => {
+  const hooks = new Map<string, (event: any) => void | Promise<void>>()
+  const prompts: any[] = []
+  const ctx = {
+    location: { directory: "/fixture", project: { id: "project" } },
+    storage: { get: async () => undefined, set: async () => {} },
+    tool: { transform: async () => {}, hook: async () => {} },
+    session: {
+      hook: async (name: string, hook: (event: any) => void) => { hooks.set(name, hook) },
+      create: async () => ({}), interrupt: async () => {}, wait: async () => {},
+      context: async () => [{ ...prompts[0], type: "user" }, { type: "idle", outcome }],
+      prompt: async (input: any) => {
+        prompts.push(input)
+        await hooks.get("prompt")!(input)
+        await hooks.get("context")!({ sessionID: input.sessionID, tools: { execute: { description: "Code Mode", input: {} } },
+          system: [], messages: [{ role: "user", content: [{ type: "text", text: input.text }] }] })
+      },
+    },
+  } as unknown as Plugin.Context
+  const native = await registerNativeAuthor(ctx)
+  await assert.rejects(native.generate({ model: { providerID: "fixture", id: "diagram" }, prompt: "legacy", outputSchema: {},
+    authoring: { prompt: "Evidence", evidence: [], maxSteps: 3 } }, { signal: new AbortController().signal }), /no automatic resume/)
+  assert.equal(prompts.length, 1)
+})

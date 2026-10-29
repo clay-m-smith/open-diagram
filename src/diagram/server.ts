@@ -13,7 +13,7 @@ import { registerNativeAuthor } from "./native.js"
 export function generationNamespace(config: DiagramConfig) {
   // Authoring policy revision: re-evaluate pre-policy accepted views on the next
   // observation, without clearing the last-good diagram or changing its schema.
-  return digest(JSON.stringify([5, config.backend, config.providerID, config.model, config.variant, config.baseURL,
+  return digest(JSON.stringify([6, config.backend, config.providerID, config.model, config.variant, config.baseURL,
     config.responseFormat, config.maxTokens, config.thinkingBudget, config.enableThinking, config.cachePrompt]))
 }
 export function defineDiagramPlugin(defaults: Record<string, unknown>, nativeAuthor = registerNativeAuthor) {

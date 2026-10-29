@@ -57,6 +57,13 @@ retries transport failures. Only explicit validated commit publishes output.
 The older single-result/one-repair machinery remains a compatibility path, not the
 default managed-author workflow.
 
+Managed draft tools return structured objects with `ok`, not JSON text. Compose
+dependent edits with `if (!result.ok) return result`, and explicitly commit when
+ready. Notation fields retain strict runtime validation; their exact schemas are
+fetched one field/record at a time through `open_diagram_draft_schema`. If the
+author stops with prose before commit, a corrective turn may use remaining steps
+and the original deadline. A prose completion claim never counts as publication.
+
 ## Authoring protocol
 
 This section describes **OpenCode snapshot/publication**. For standalone use,
