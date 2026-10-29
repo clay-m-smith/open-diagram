@@ -1,5 +1,5 @@
 import type { DiagramGraph } from "./schema.js"
-import { diagramTextWidth, layoutDiagram, wrapDiagramText } from "./layout.js"
+import { diagramTextWidth, layoutDiagram, wrapDiagramText, type DiagramLayout } from "./layout.js"
 import { diagramArrowColor } from "./arrow-colors.js"
 import { renderSceneSVG, sceneMarkerSVG } from "./scene-export.js"
 
@@ -19,6 +19,36 @@ const PALETTES = {
 const escape = (text: string) => text.replace(/[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]/gu, "\uFFFD")
   .replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[char]!))
 
+/** Vector images need not inherit terminal-cell port offsets on a simple chain. */
+function alignExportChain(layout: DiagramLayout, graph: DiagramGraph): DiagramLayout {
+  if (layout.nodes.length < 2 || layout.edges.length !== layout.nodes.length - 1) return layout
+  if (layout.scene && Object.values(layout.scene).some(items => items.length)) return layout
+  if (graph.notation?.family === "architecture" && graph.notation.ports.length) return layout
+  const ordered = [...layout.nodes].sort((a, b) => a.y - b.y)
+  // Require exactly one downward edge between each adjacent layer. Branches,
+  // feedback, disconnected nodes, groups and named ports retain ELK's geometry.
+  const chain = ordered.slice(1).map((target, index) => {
+    const source = ordered[index]
+    return layout.edges.find(edge => edge.from === source.node.id && edge.to === target.node.id
+      && edge.sourceSide === "bottom" && edge.targetSide === "top"
+      && target.y - source.y - source.height >= edge.labelLines.length + 1)
+  })
+  if (chain.some(edge => !edge)) return layout
+  const center = (Math.max(...ordered.map(box => box.width)) + 4) / 2
+  const labelX = center + 1.5
+  const width = Math.max(center * 2, labelX + Math.max(0, ...layout.edges.flatMap(edge => edge.labelLines.map(diagramTextWidth))) + 2)
+  const nodes = layout.nodes.map(box => ({ ...box, x: center - box.width / 2 }))
+  const boxes = new Map(nodes.map(box => [box.node.id, box]))
+  const edges = layout.edges.map(edge => {
+    const source = boxes.get(edge.from)!, target = boxes.get(edge.to)!
+    const start = source.y + source.height, end = target.y - 1
+    return { ...edge, direct: true, labelX, labelY: start + (target.y - start - edge.labelLines.length) / 2,
+      // Export maps route cell centers with +0.5; compensate for that here.
+      points: [{ x: center - 0.5, y: start }, { x: center - 0.5, y: end }] }
+  })
+  return { ...layout, width, nodes, edges }
+}
+
 /** Render accepted graph data only; never captures terminal UI or source text. */
 export async function renderDiagramSVG(graph: DiagramGraph, options: DiagramExportOptions = {}): Promise<string> {
   if (!graph.nodes.length || graph.nodes.length > 24 || graph.edges.length > 48) throw new Error("Diagram exceeds export bounds")
@@ -27,7 +57,7 @@ export async function renderDiagramSVG(graph: DiagramGraph, options: DiagramExpo
   const dark = options.colorMode === "dark"
   const palette = PALETTES[dark ? "dark" : "light"]
   const caption = graph.title
-  const layout = await layoutDiagram(graph, { columns: 88, selected: options.selected })
+  const layout = alignExportChain(await layoutDiagram(graph, { columns: 88, selected: options.selected }), graph)
   const title = wrapDiagramText(caption, 86)
   const summary = graph.notation && graph.summary ? wrapDiagramText(graph.summary, 86) : []
   const top = MARGIN + (title.length + summary.length + 1) * LINE

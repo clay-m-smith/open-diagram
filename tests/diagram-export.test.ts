@@ -63,6 +63,43 @@ test("PNG rasterizes full tall SVG with bounded nonempty dimensions", async () =
   assert.match(svg, new RegExp(`height="${height}"`))
 })
 
+test("vector chains center unequal blocks and connectors without mutating terminal geometry", async () => {
+  const chain: DiagramGraph = { title: "Author pipeline", summary: "", nodes: [
+    "Generation request", "Managed author session", "Private canonical draft", "Explicit commit", "Accepted diagram",
+  ].map((label, index) => ({ id: `n${index}`, label, kind: "service", detail: "Selected details expand this block across several lines without moving other block centers.",
+    status: "observed", evidence: ["source"] })), edges: ["prompt and evidence", "native draft tools", "candidate graph", "valid commit only"]
+    .map((label, index) => ({ from: `n${index}`, to: `n${index + 1}`, label })) }
+  const original = structuredClone(chain)
+  for (const selected of [undefined, "n3"]) {
+    const terminal = await layoutDiagram(chain, { columns: 88, selected })
+    const before = structuredClone(terminal)
+    const svg = await renderDiagramSVG(chain, { selected, colorMode: "dark" })
+    const boxes = [...svg.matchAll(/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="10"/g)]
+      .map(([, x, y, width, height]) => ({ x: +x, y: +y, width: +width, height: +height }))
+    assert.equal(boxes.length, 5)
+    const centers = boxes.map(box => box.x + box.width / 2)
+    assert.equal(new Set(centers).size, 1, "all block centers share one vertical axis, including odd/even widths")
+    const routes = [...svg.matchAll(/<path d="([^"]+)" fill="none"[^>]*marker-end=/g)]
+    assert.equal(routes.length, 4)
+    for (const [index, route] of routes.entries()) {
+      const points = [...route[1].matchAll(/[ML]([\d.]+),([\d.]+)/g)].map(([, x, y]) => ({ x: +x, y: +y }))
+      assert.ok(points.every(point => point.x === centers[0]), "arrows join exact block centers, not half-cell offsets")
+      assert.equal(points[0].y, boxes[index].y + boxes[index].height)
+      assert.equal(points.at(-1)!.y, boxes[index + 1].y)
+      assert.ok(points.every((point, i) => !i || point.y >= points[i - 1].y))
+    }
+    const colorLabels = [...svg.matchAll(/<text x="([\d.]+)" y="([\d.]+)" fill="(#[a-f0-9]+)"[^>]*>([^<]+)<\/text>/g)]
+      .filter(([, , , color]) => !["#e5e7eb", "#b6c2d2"].includes(color))
+    assert.ok(colorLabels.length >= 4)
+    for (const [, x, y] of colorLabels) {
+      assert.ok(+x > centers[0])
+      assert.ok(boxes.every(box => +y < box.y || +y > box.y + box.height), "edge labels stay in inter-block gaps")
+    }
+    assert.deepEqual(terminal, before, "export-only alignment cannot modify the shared cached terminal layout")
+  }
+  assert.deepEqual(chain, original)
+})
+
 test("specialized SVG and PNG expose shared notation geometry without citations", async () => {
   for (const [family, graph] of Object.entries(notationFixtures)) {
     const svg = await renderDiagramSVG(graph)
